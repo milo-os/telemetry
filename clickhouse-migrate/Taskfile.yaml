@@ -30,7 +30,8 @@ tasks:
       PORT: 19000
     cmds:
       - docker rm -f {{.CONTAINER}} >/dev/null 2>&1 || true
-      - docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -p {{.PORT}}:9000 {{.IMAGE}}
+      # ACCESS_MANAGEMENT: the suite creates its own users; setup dies without it.
+      - docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -p {{.PORT}}:9000 {{.IMAGE}}
       - defer: docker rm -f {{.CONTAINER}} >/dev/null
       # Poll instead of sleeping a fixed amount: startup time varies.
       - |

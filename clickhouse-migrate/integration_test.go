@@ -52,11 +52,8 @@ func TestApplyMigrations_FreshDatabase(t *testing.T) {
 	_, err = bootstrap.Exec("CREATE DATABASE " + quoteIdentifier(database))
 	require.NoError(t, err)
 
-	// The 000001 migration GRANTs and row-policies ops and queryapiUser, which
-	// exist on the real server via ssl_auth.xml certificate mapping. That layer
-	// is absent here, so create the users for the migration to apply to. The
-	// settings_allow_custom_setting_* grant is now part of the migration itself
-	// (Task 2) -- no manual workaround grant here anymore.
+	// ssl_auth.xml's certificate mapping is absent here, so create the users the
+	// policy attaches to.
 	createTestUser(t, bootstrap, "ops")
 	createTestUser(t, bootstrap, queryapiUser)
 
@@ -82,34 +79,21 @@ func TestApplyMigrations_FreshDatabase(t *testing.T) {
 	).Scan(&count))
 	require.Equal(t, uint64(1), count, "expected the logs table to exist")
 
-	assertRestrictedQueryapi(t, db, database, queryapiUser)
+	assertRestrictedQueryapi(t, db, database)
 }
 
 // assertRestrictedQueryapi verifies the 000001 migration installed the queryapi
-// row policy and read-only grant. Requires the queryapi user to exist.
-func assertRestrictedQueryapi(t *testing.T, db *sql.DB, database, queryapiUser string) {
+// row policy. Grants are deliberately not asserted: the real identity lives in
+// users_xml, which SQL cannot GRANT to, so this test's SQL user can't model it.
+func assertRestrictedQueryapi(t *testing.T, db *sql.DB, database string) {
 	t.Helper()
 
 	var policies uint64
 	require.NoError(t, db.QueryRow(
-		"SELECT count() FROM system.row_policies WHERE database = ? AND table_name = 'logs' AND policy_name = 'queryapi_project_isolation'",
+		"SELECT count() FROM system.row_policies WHERE database = ? AND table = 'logs' AND short_name = 'queryapi_project_isolation'",
 		database,
 	).Scan(&policies))
 	require.Equal(t, uint64(1), policies, "expected the queryapi_project_isolation row policy on logs")
-
-	var grants string
-	require.NoError(t, db.QueryRow(
-		"SELECT access_type FROM system.grants WHERE user_name = ? AND (database, table) = (?, 'logs')",
-		queryapiUser, database,
-	).Scan(&grants))
-	require.Equal(t, "SELECT", grants, "queryapi must be read-only (SELECT) on logs")
-
-	var customSettingGrants uint64
-	require.NoError(t, db.QueryRow(
-		"SELECT count() FROM system.grants WHERE user_name = ? AND access_type IN ('SETTINGS_ALLOW_CUSTOM_SETTING_READ', 'SETTINGS_ALLOW_CUSTOM_SETTING_WRITE')",
-		queryapiUser,
-	).Scan(&customSettingGrants))
-	require.Equal(t, uint64(2), customSettingGrants, "expected both custom-setting grants needed for telemetry_project_id")
 }
 
 // createTestUser creates a throwaway user for integration testing, dropping any
