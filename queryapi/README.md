@@ -66,6 +66,7 @@ them without restating the rest. See [Deployment](#deployment).
 | `--cert-dir` | `apiserver.local.config/certificates` |
 | `--authentication-kubeconfig` | in-cluster config -- see [Where the reviews go](#where-the-reviews-go) |
 | `--requestheader-client-ca-file` | empty: read the CA from `extension-apiserver-authentication` in `kube-system` |
+| `--requestheader-uid-headers` | `X-Remote-Uid` -- not the framework default; see [Identity](#identity) |
 | `--authorization-kubeconfig` | in-cluster config -- see [Where the reviews go](#where-the-reviews-go) |
 | `--authorization-always-allow-paths` | `/healthz,/readyz,/livez,/metrics` |
 | `--authorization-webhook-cache-authorized-ttl` | `10s` |
@@ -135,6 +136,13 @@ authenticator**, which is not optional and has no reduced mode:
 - only then are the `X-Remote-*` headers on that connection believed;
 - a caller presenting a bearer token directly is authenticated by `TokenReview`
   instead.
+
+The caller's **UID** is part of that identity and is load-bearing. Milo's IAM
+resolves a subject to `iam.miloapis.com/InternalUser:<uid>` and authorizes that,
+not the username, so a review carrying an empty UID matches no grant and denies
+every query -- with nothing in the 403 to say why. The framework does not
+default `--requestheader-uid-headers`, so the deployment sets it explicitly, as
+activity does.
 
 Nothing a client sets for itself -- no header, no path segment, no query
 parameter -- names the project. A caller the authenticator cannot identify at

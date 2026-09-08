@@ -30,6 +30,7 @@ const prefix = queryapi.APIPrefix
 // Header.Set canonicalises them.
 func forwardIdentity(req *http.Request) {
 	req.Header.Set("X-Remote-User", "user@example.com")
+	req.Header.Set("X-Remote-Uid", "user-uid-123")
 	req.Header["X-Remote-Group"] = []string{"engineering", "oncall"}
 	req.Header["X-Remote-Extra-Iam.miloapis.com%2Fparent-type"] = []string{"Project"}
 	req.Header["X-Remote-Extra-Iam.miloapis.com%2Fparent-name"] = []string{"proj-abc"}
@@ -236,6 +237,13 @@ func TestReviewCarriesTheWholeCaller(t *testing.T) {
 	}
 	if got := attrs.GetUser().GetGroups(); len(got) != 2 || got[0] != "engineering" || got[1] != "oncall" {
 		t.Errorf("groups = %v, want [engineering oncall]", got)
+	}
+	// Milo's IAM resolves the caller to iam.miloapis.com/InternalUser:<uid> and
+	// authorizes that, not the username. A review carrying an empty UID matches
+	// no grant and denies every query, so the UID has to survive the proxy hop
+	// into the review -- which is what --requestheader-uid-headers configures.
+	if got := attrs.GetUser().GetUID(); got != "user-uid-123" {
+		t.Errorf("uid = %q, want user-uid-123", got)
 	}
 	extra := attrs.GetUser().GetExtra()
 	// The whole of tenancy: Milo reads the project from here, so it has to

@@ -42,6 +42,7 @@ spec:
             - --authentication-kubeconfig=$(AUTHENTICATION_KUBECONFIG)
             - --authorization-kubeconfig=$(AUTHORIZATION_KUBECONFIG)
             - --requestheader-client-ca-file=$(REQUESTHEADER_CLIENT_CA_FILE)
+            - --requestheader-uid-headers=$(REQUESTHEADER_UID_HEADERS)
             - --authorization-always-allow-paths=$(AUTHORIZATION_ALWAYS_ALLOW_PATHS)
           env:
             # Synthetic logs until the ClickHouse backend can query. Switch to
@@ -94,6 +95,16 @@ spec:
             # certificate, and no other.
             - name: REQUESTHEADER_CLIENT_CA_FILE
               value: ""
+            # The header carrying the caller's UID. Not defaulted by the
+            # framework, and Milo's IAM authorizes on the UID rather than the
+            # username -- it resolves the caller to
+            # iam.miloapis.com/InternalUser:<uid> before checking anything. Drop
+            # this and every review is made for an empty subject, matches no
+            # grant, and denies: a 403 on every query with nothing in the
+            # message to say why. activity sets the same header for the same
+            # reason.
+            - name: REQUESTHEADER_UID_HEADERS
+              value: "X-Remote-Uid"
             # The paths served without a SubjectAccessReview. The probes below
             # and the metrics scraper present no credentials, and the framework
             # default omits /metrics. Nothing listed here can open a query
