@@ -12,10 +12,21 @@ spec:
   plural: logs
   singular: log
   permissions:
-    # query returns log lines; the get* actions return only metadata about
-    # them. Label values in particular carry pod names, hostnames and customer
-    # identifiers, which is a boundary that cannot be drawn later without
-    # migrating every policy that granted a coarser permission.
+    # Two gates, both SubjectAccessReviews against this IAM, and a caller needs
+    # a grant at each.
+    #
+    # `get` is the one Milo's aggregator asks for. It authorizes the proxy hop
+    # itself, deriving attributes from the request path with the stock
+    # Kubernetes resolver: every Loki route is a GET under .../logs/loki/...,
+    # so all of them render as `get` on `logs` no matter which route they are.
+    # It cannot distinguish them, so it means only "may reach the log API".
+    - get
+    # The actions below are queryapi's own, asked after the proxy hop, where
+    # the route is known. query returns log lines; the get* actions return only
+    # metadata about them. Label values in particular carry pod names,
+    # hostnames and customer identifiers, which is a boundary that cannot be
+    # drawn later without migrating every policy that granted a coarser
+    # permission.
     - query
     - getLabels
     - getSeries

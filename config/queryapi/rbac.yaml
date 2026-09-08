@@ -1,13 +1,15 @@
 # queryapi needs an identity of its own twice over: to read the front proxy's
-# client CA out of kube-system so it can authenticate callers, and to ask Milo
-# whether a caller may read the telemetry of the project its identity says it
-# is acting in. Hence the ServiceAccount, the mounted token (see
-# deployment.yaml), the permission to create SubjectAccessReviews, and the
-# RoleBinding at the bottom. Modelled on config/operator/rbac/.
+# client CA so it can authenticate callers, and to ask Milo whether a caller
+# may read the telemetry of the project its identity says it is acting in.
+# Hence the ServiceAccount, the mounted token (see deployment.yaml), the
+# permission to create SubjectAccessReviews, and the RoleBinding at the bottom.
+# Modelled on config/operator/rbac/.
 #
-# This is the same RBAC the activity service needs, for the same reason: both
-# delegate authorization to Milo through the apiserver framework rather than
-# deciding it themselves.
+# All of this grants queryapi's identity in the cluster it runs in, which is
+# what it needs when that cluster is the control plane deciding both questions.
+# A queryapi pointed at a control plane elsewhere authenticates there with the
+# credentials in its kubeconfigs instead, and needs the equivalent grants on
+# that side; see deployment.yaml's AUTHENTICATION_KUBECONFIG.
 #
 # The subject namespaces below are written out rather than left as the
 # kubebuilder "system" placeholder: that placeholder only resolves under a
@@ -55,16 +57,22 @@ subjects:
 ---
 # Read access to the extension-apiserver-authentication ConfigMap, which holds
 # the front proxy's client CA and the header names it forwards identity under.
-# This is load-bearing: queryapi authenticates every request with the
-# Kubernetes delegating authenticator, which reads that CA from here (that is
-# what --requestheader-client-ca-file= empty means in deployment.yaml) and
-# verifies the connection's client certificate against it before believing any
-# X-Remote-* header. Without this binding queryapi cannot start authenticating
-# anyone, and every tenant request is a 401.
+# queryapi authenticates every request with the Kubernetes delegating
+# authenticator, which verifies the connection's client certificate against
+# that CA before believing any X-Remote-* header.
 #
-# The namespace below is kube-system and must stay kube-system: a kustomization
-# that applies a namespace transformer to this directory has to exclude this
-# resource, or the binding lands where the ConfigMap is not.
+# This binding is what the *empty* --requestheader-client-ca-file in
+# deployment.yaml depends on, and only in the cluster the authentication
+# kubeconfig selects. Setting that flag to a file skips the ConfigMap lookup
+# and makes this binding dead weight -- which is the right shape when the front
+# proxy belongs to a control plane elsewhere, since this cluster's CA is then
+# the wrong one to verify against.
+#
+# The namespace below is kube-system and must stay kube-system. Anything that
+# rewrites namespaces across this directory has to exclude this resource --
+# kustomize's namespace transformer, or a GitOps tool applying the bundle under
+# a single target namespace. The binding is silently useless anywhere else: the
+# Role it names exists only in kube-system.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:

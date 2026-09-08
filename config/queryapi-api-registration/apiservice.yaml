@@ -1,58 +1,32 @@
-# queryapi serves HTTPS, so the aggregator needs something to verify the
-# serving certificate with, and insecureSkipTLSVerify stays false so that a
-# missing or stale bundle fails loudly instead of silently accepting any
-# certificate.
+# The aggregator dials queryapi over HTTPS and verifies the serving
+# certificate. There is no caBundle here and insecureSkipTLSVerify stays false,
+# which together mean one thing: **queryapi's serving certificate must be
+# signed by a CA the aggregator already trusts.**
 #
-# ## Where the caBundle comes from, and what you must supply
+# Issue it from the control plane's own CA -- the same one that signs the
+# aggregator's certificates -- and there is nothing to inject and nothing to
+# keep in sync. That is how the activity service is registered: no caBundle, no
+# annotation, no insecureSkipTLSVerify. Point config/queryapi/deployment.yaml's
+# `csi.cert-manager.io/issuer-name` at that CA's issuer.
 #
-# It used to come from `cert-manager.io/inject-ca-from: o11y-system/queryapi-serving-cert`,
-# which named a Certificate object. There is no longer a Certificate to name:
-# config/queryapi/deployment.yaml gets its serving certificate from the
-# cert-manager CSI driver, which issues per-pod and stores nothing in the API.
-# Leaving that annotation in place would have left cainjector with nothing to
-# read, the caBundle empty, and every query failing at the aggregator.
+# Injecting a bundle for a *different* CA is possible and is the wrong shape:
+# it makes the aggregator trust one more CA for one more backend, and adds a
+# copy of a certificate that has to be renewed in step with the issuer. If you
+# genuinely cannot use the control plane's CA:
 #
-# So the annotation now points at the *issuing CA's* Secret instead, which is
-# the one thing that does still exist as an object and is exactly what the
-# aggregator has to trust. cainjector copies `ca.crt` (falling back to
-# `tls.crt`) out of it into spec.caBundle below.
-#
-# **PLACEHOLDER-issuer-ca is not a real secret name.** The consumer must patch
-# it to the Secret backing the ClusterIssuer that deployment.yaml's
-# `csi.cert-manager.io/issuer-name` names -- for a `spec.ca` issuer that is its
-# `spec.ca.secretName`; in datum-cloud/infra it is the o11y-system
-# ClusterIssuer's CA secret. Two things to get right:
-#
-#   1. That Secret needs `cert-manager.io/allow-direct-injection: "true"` on
-#      it, or cainjector refuses to read it. A Secret produced by a cert-manager
-#      Certificate gets that from the Certificate's `spec.secretTemplate`
-#      (see config/queryapi-e2e/issuer.yaml for a worked example).
-#   2. The annotation is namespace-qualified, so patch the namespace too if
-#      queryapi is not deployed in o11y-system.
-#
-# Two alternatives, both deliberate choices rather than accidents:
-#
-#   - Patch `spec.caBundle` directly with the base64 CA. Right when there is no
-#     cainjector, or when the CA is managed outside cert-manager entirely; drop
-#     the annotation if you do, since cainjector would overwrite the field.
-#   - Patch `insecureSkipTLSVerify: true`, the way activity's dev and
-#     test-infra overlays do. This gives up verification of the *backend*, not
-#     of callers: the requestheader client-certificate check queryapi runs on
-#     inbound requests is unaffected. Acceptable for a throwaway cluster, not
-#     for anything holding real telemetry.
-#
-# A self-signed issuer has no CA Secret at all -- cert-manager mints an
-# unrelated key per certificate -- so it cannot be injected from. That is why
-# config/queryapi-e2e/ bootstraps a real CA issuer rather than pointing the CSI
-# volume straight at a selfSigned one.
+#   - `cert-manager.io/inject-ca-from-secret: <ns>/<secret>` names the issuing
+#     CA's Secret and cainjector fills spec.caBundle from it. The Secret needs
+#     `cert-manager.io/allow-direct-injection: "true"`, and a selfSigned issuer
+#     has no CA Secret to name at all.
+#   - `spec.caBundle` can be patched directly with the base64 CA, for clusters
+#     with no cainjector.
+#   - `insecureSkipTLSVerify: true` gives up verification of the *backend*
+#     only; the requestheader client-certificate check on inbound requests is
+#     unaffected. For throwaway clusters, never for real telemetry.
 apiVersion: apiregistration.k8s.io/v1
 kind: APIService
 metadata:
   name: v1alpha1.o11y.miloapis.com
-  annotations:
-    # PLACEHOLDER -- see above. Patch the secret name (and the namespace, if
-    # you moved queryapi) to the issuing CA's Secret.
-    cert-manager.io/inject-ca-from-secret: o11y-system/PLACEHOLDER-issuer-ca
 spec:
   service:
     name: queryapi

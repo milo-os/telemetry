@@ -17,8 +17,9 @@
 #   - adds a self-signed CA (issuer.yaml);
 #   - points the deployment's CSI volume at that CA instead of
 #     PLACEHOLDER-issuer, and at an Issuer instead of a ClusterIssuer;
-#   - points the APIService's CA injection at that CA's Secret instead of
-#     PLACEHOLDER-issuer-ca;
+#   - injects that CA into the APIService, which the base deliberately does
+#     not do -- in a real environment the serving certificate comes from the
+#     control plane's own CA and there is nothing to inject;
 #   - opens the NetworkPolicy, which otherwise names a Milo namespace that does
 #     not exist here.
 #

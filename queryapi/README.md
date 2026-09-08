@@ -64,9 +64,9 @@ them without restating the rest. See [Deployment](#deployment).
 | `--bind-address` | `0.0.0.0` |
 | `--tls-cert-file`, `--tls-private-key-file` | none -- self-signs into `--cert-dir` |
 | `--cert-dir` | `apiserver.local.config/certificates` |
-| `--authentication-kubeconfig` | in-cluster config |
+| `--authentication-kubeconfig` | in-cluster config -- see [Where the reviews go](#where-the-reviews-go) |
 | `--requestheader-client-ca-file` | empty: read the CA from `extension-apiserver-authentication` in `kube-system` |
-| `--authorization-kubeconfig` | in-cluster config |
+| `--authorization-kubeconfig` | in-cluster config -- see [Where the reviews go](#where-the-reviews-go) |
 | `--authorization-always-allow-paths` | `/healthz,/readyz,/livez,/metrics` |
 | `--authorization-webhook-cache-authorized-ttl` | `10s` |
 | `--authorization-webhook-cache-unauthorized-ttl` | `10s` |
@@ -127,9 +127,11 @@ authenticator**, which is not optional and has no reduced mode:
 
 - queryapi terminates TLS itself, so every connection can carry a client
   certificate;
-- the certificate is verified against the front proxy's CA, read from the
-  `extension-apiserver-authentication` ConfigMap in `kube-system` (hence the
-  RoleBinding in [`config/queryapi/rbac.yaml`](../config/queryapi/rbac.yaml));
+- the certificate is verified against the front proxy's CA, read by default
+  from the `extension-apiserver-authentication` ConfigMap in `kube-system` of
+  whichever cluster `--authentication-kubeconfig` selects (hence the RoleBinding
+  in [`config/queryapi/rbac.yaml`](../config/queryapi/rbac.yaml)), or from
+  `--requestheader-client-ca-file` when that names one;
 - only then are the `X-Remote-*` headers on that connection believed;
 - a caller presenting a bearer token directly is authenticated by `TokenReview`
   instead.
@@ -154,8 +156,19 @@ Tenancy rides in the review. The caller's `iam.miloapis.com/parent-type` and
 project they name. There is no project field in `ResourceAttributes` to set,
 and nothing for queryapi to get wrong.
 
-What queryapi supplies is the vocabulary. A custom `RequestInfoResolver` maps
-each route onto one Milo permission:
+**There are two gates, and a caller needs a grant at each.** Milo's aggregator
+authorizes the proxy hop before queryapi ever sees the request, deriving
+attributes from the path with the stock Kubernetes resolver. Every Loki route is
+a `GET` under `.../logs/loki/...`, so all of them render identically as `get` on
+`logs`; the aggregator cannot tell them apart, and `o11y.miloapis.com/logs.get`
+therefore means only "may reach the log API". `metrics.get` is the same for
+metrics. Without it the request is refused at the proxy with a `Forbidden`
+naming a resource nobody declared, and queryapi records nothing -- it never
+arrived.
+
+What queryapi supplies is the vocabulary that gate cannot express. Its own
+`RequestInfoResolver` runs after the hop, where the route is known, and maps
+each one onto a specific permission:
 
 | Route (under `/apis/o11y.miloapis.com/v1alpha1`) | Permission |
 | --- | --- |
@@ -168,12 +181,41 @@ each route onto one Milo permission:
 
 `query` returns log lines or samples; the `get*` actions return only metadata
 about them, which is a separate boundary because label values carry pod names,
-hostnames and customer identifiers. All six are granted by the
-`telemetry.miloapis.com-viewer` role
+hostnames and customer identifiers. All six, plus the two coarse `get`
+permissions above, are granted by the `telemetry.miloapis.com-viewer` role
 ([`config/operator/iam/`](../config/operator/iam/)). The metrics routes return
 501 today and are gated anyway, so they cannot ship unguarded.
 
+The split is only enforceable here, not at the aggregator, so a metadata-only
+role depends on queryapi's check holding rather than on Milo refusing the
+request. That is true of every property queryapi enforces past the proxy hop.
+
 `queryapi_authorization_total{resource,verb,decision}` reports the outcomes.
+
+### Where the reviews go
+
+Both delegating options default to in-cluster config, which means the API
+server queryapi is running next to, reached with its mounted service account
+token. That is correct when queryapi runs **inside the control plane** that
+authenticates callers and evaluates IAM.
+
+It is wrong, quietly, when queryapi runs somewhere else -- beside its storage,
+in a cluster the aggregator only proxies into. Then:
+
+- `SubjectAccessReview`s go to the local API server, which knows none of the
+  permissions in `internal/authz/permissions.go` and denies every query;
+- the front proxy's CA is read from the local
+  `extension-apiserver-authentication`, which holds that cluster's front proxy
+  rather than the one whose client certificate is actually arriving.
+
+Neither failure announces itself as a misconfiguration: the first is a 403 that
+looks like a missing role, the second a 401 that looks like a bad certificate.
+A deployment in that shape must set `--authentication-kubeconfig` and
+`--authorization-kubeconfig` to a kubeconfig for the control plane, with a
+credential that may create `SubjectAccessReview`s there, and point
+`--requestheader-client-ca-file` at that control plane's CA -- which also
+retires the `kube-system` RoleBinding, since naming the file skips the ConfigMap
+lookup. Confirm with one `SubjectAccessReview` by hand before trusting an allow.
 
 ### Why an unmapped path cannot be served
 
@@ -228,14 +270,16 @@ still worth having, and it is also what limits who can assert
 ## Deployment
 
 [`config/queryapi/`](../config/queryapi/) is the bundle. It is deliberately not
-self-sufficient: it names three things the consumer owns, and applying it
-without patching them will not work.
+self-sufficient: it names two things the consumer owns, and applying it
+without patching them will not work. A consumer running queryapi outside the
+control plane has a fourth thing to supply, which is not a placeholder because
+the defaults are valid values rather than obviously empty ones -- see
+[Where the reviews go](#where-the-reviews-go).
 
 | PLACEHOLDER | Where | What to supply |
 | --- | --- | --- |
-| `PLACEHOLDER-issuer` | `deployment.yaml`, `csi.cert-manager.io/issuer-name` | The `ClusterIssuer` that signs the serving certificate. In `datum-cloud/infra` this is the `o11y-system` one. |
+| `PLACEHOLDER-issuer` | `deployment.yaml`, `csi.cert-manager.io/issuer-name` | The `ClusterIssuer` that signs the serving certificate. It must be **the CA the aggregator already trusts** -- see below. |
 | `PLACEHOLDER-milo-namespace` | `networkpolicy.yaml` | The namespace running `milo-apiserver`. |
-| `PLACEHOLDER-issuer-ca` | [`config/queryapi-api-registration/apiservice.yaml`](../config/queryapi-api-registration/apiservice.yaml), `cert-manager.io/inject-ca-from-secret` | The `Secret` holding that issuer's CA, so cainjector can fill the APIService's `caBundle`. |
 
 ### The serving certificate
 
@@ -263,14 +307,23 @@ has to name the addresses the aggregator dials. `o11y-system` appears there,
 in `apiservice.yaml`, and in `rbac.yaml`'s subjects; a consumer deploying
 elsewhere patches all three together.
 
-The consequence for the aggregator is that there is no `Certificate` to point
-`cert-manager.io/inject-ca-from` at any more. The APIService names the issuing
-CA's `Secret` instead (`cert-manager.io/inject-ca-from-secret`), which is the
-thing the aggregator actually has to trust; that `Secret` needs
-`cert-manager.io/allow-direct-injection: "true"` on it before cainjector will
-read it. `insecureSkipTLSVerify` stays `false`. `apiservice.yaml` documents the
-two alternatives -- patching `caBundle` by hand, or giving up backend
-verification -- and when each is defensible.
+**Which issuer you name is a correctness question, not a preference.** The
+aggregator verifies this certificate, and the APIService carries no `caBundle`
+with `insecureSkipTLSVerify: false`, so the certificate has to be signed by a CA
+the aggregator already trusts -- in practice the control plane's own CA, the one
+that signs its own certificates. Name that issuer and there is nothing to
+inject, nothing to renew in step, and no extra CA in the aggregator's trust for
+one backend. This is how the activity service is registered: no `caBundle`, no
+annotation, no `insecureSkipTLSVerify`.
+
+Naming any other CA leaves the aggregator unable to verify the backend, and
+every query fails at the proxy hop with `x509: certificate signed by unknown
+authority` before authorization is ever reached. Recovering from that means
+injecting a bundle into the APIService, which
+[`apiservice.yaml`](../config/queryapi-api-registration/apiservice.yaml)
+documents along with the two other escape hatches and when each is defensible.
+`config/queryapi-e2e/` takes that route deliberately, because a throwaway
+cluster has no control plane CA to borrow.
 
 ### Overriding a flag
 
@@ -309,8 +362,8 @@ patchable the same way.
 [`config/queryapi-e2e/`](../config/queryapi-e2e/) is an overlay over
 `config/queryapi` for a cluster that has none of the above. It adds a
 self-signed CA, repoints the CSI volume at it (as a namespaced `Issuer`),
-repoints the APIService's CA injection at that CA's `Secret`, and opens the
-NetworkPolicy. `kustomize build config/queryapi-e2e` applies to an empty
+injects that CA into the APIService -- which the base deliberately does not do
+-- and opens the NetworkPolicy. `kustomize build config/queryapi-e2e` applies to an empty
 cluster and works.
 
 The CA is bootstrapped -- a selfSigned `Issuer` issues a CA `Certificate`,
