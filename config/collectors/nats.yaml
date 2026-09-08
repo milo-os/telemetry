@@ -146,10 +146,13 @@ spec:
 # vmagent selects every PodMonitor in the cluster (selectAllByDefault) and
 # stamps the `cluster` label on remote write, so this is all it takes to land
 # edge broker metrics next to the hub's in VictoriaMetrics.
+#
+# Named edge-* because collectors/ is applied to the hub too, where `nats`
+# already belongs to the NATS chart's own PodMonitor.
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
-  name: nats
+  name: edge-nats
 spec:
   selector:
     matchLabels:

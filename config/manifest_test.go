@@ -210,6 +210,53 @@ func TestObservedTimeAttributeIsPlumbedEndToEnd(t *testing.T) {
 	}
 }
 
+// strippedByHub lists the collectors/ resources the hub's o11y-sink-app
+// Kustomization deletes by kind and name. The bundle is applied to both the
+// hub and the edges, so anything outside this set reaches the hub too.
+var strippedByHub = map[string]bool{
+	"Deployment/nats":                             true,
+	"Service/nats":                                true,
+	"ConfigMap/nats-config":                       true,
+	"OpenTelemetryCollector/gateway-collector":    true,
+	"OpenTelemetryCollector/node-agent-collector": true,
+}
+
+// TestEdgeOnlyResourcesCannotCollideOnTheHub guards a cross-repo contract the
+// compiler cannot see. collectors/ ships to the hub as well as the edges, and
+// the hub strips edge resources by name -- so a new resource named for a thing
+// the hub already runs silently takes ownership of the hub's copy. That is how
+// PodMonitor/nats replaced the NATS chart's own monitor and blinded hub
+// JetStream metrics: same name, same namespace, selector matching nothing.
+//
+// An edge- prefix makes the collision impossible rather than relying on the
+// strip list in datum-cloud/infra staying in step with this file.
+func TestEdgeOnlyResourcesCannotCollideOnTheHub(t *testing.T) {
+	const path = "collectors/nats.yaml"
+
+	dec := yaml.NewDecoder(strings.NewReader(readFile(t, path)))
+	for {
+		var doc struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if doc.Kind == "" || doc.Metadata.Name == "" {
+			continue
+		}
+
+		id := doc.Kind + "/" + doc.Metadata.Name
+		if strippedByHub[id] || strings.HasPrefix(doc.Metadata.Name, "edge-") {
+			continue
+		}
+		t.Errorf("%s: %s is neither stripped by the hub nor named edge-*; it will be applied to the hub, where it may take over a resource of the same name",
+			path, id)
+	}
+}
+
 // TestEdgeNATSExporterIsScraped guards the edge broker's metrics path. vmagent
 // discovers targets from PodMonitors, not from prometheus.io annotations, so
 // without one the exporter serves :7777 to nobody and every edge NATS panel
