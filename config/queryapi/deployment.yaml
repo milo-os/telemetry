@@ -147,10 +147,14 @@ spec:
         # object and no long-lived Secret holding a private key exist for this
         # workload at all.
         #
-        # PLACEHOLDER-issuer must be patched by the consumer to name a real
-        # ClusterIssuer -- in datum-cloud/infra that is the o11y-system
-        # ClusterIssuer. config/queryapi-e2e/ patches it to a self-signed CA it
-        # supplies itself, for clusters that have no such issuer.
+        # PLACEHOLDER-issuer must be patched by the consumer, and what it
+        # names matters: the aggregator verifies this certificate and the
+        # APIService carries no caBundle, so it has to be **the CA the
+        # aggregator already trusts** -- in practice the control plane's own.
+        # Any other CA leaves the aggregator unable to verify the backend, and
+        # then needs a bundle injected into the APIService to compensate.
+        # config/queryapi-e2e/ does exactly that for clusters with no control
+        # plane CA to borrow.
         #
         # This is a *serving* certificate, hence "server auth" and the dnsNames
         # covering the addresses the aggregator dials. o11y-system is the

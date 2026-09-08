@@ -255,7 +255,7 @@ still worth having, and it is also what limits who can assert
 ## Deployment
 
 [`config/queryapi/`](../config/queryapi/) is the bundle. It is deliberately not
-self-sufficient: it names three things the consumer owns, and applying it
+self-sufficient: it names two things the consumer owns, and applying it
 without patching them will not work. A consumer running queryapi outside the
 control plane has a fourth thing to supply, which is not a placeholder because
 the defaults are valid values rather than obviously empty ones -- see
@@ -263,9 +263,8 @@ the defaults are valid values rather than obviously empty ones -- see
 
 | PLACEHOLDER | Where | What to supply |
 | --- | --- | --- |
-| `PLACEHOLDER-issuer` | `deployment.yaml`, `csi.cert-manager.io/issuer-name` | The `ClusterIssuer` that signs the serving certificate. In `datum-cloud/infra` this is the `o11y-system` one. |
+| `PLACEHOLDER-issuer` | `deployment.yaml`, `csi.cert-manager.io/issuer-name` | The `ClusterIssuer` that signs the serving certificate. It must be **the CA the aggregator already trusts** -- see below. |
 | `PLACEHOLDER-milo-namespace` | `networkpolicy.yaml` | The namespace running `milo-apiserver`. |
-| `PLACEHOLDER-issuer-ca` | [`config/queryapi-api-registration/apiservice.yaml`](../config/queryapi-api-registration/apiservice.yaml), `cert-manager.io/inject-ca-from-secret` | The `Secret` holding that issuer's CA, so cainjector can fill the APIService's `caBundle`. |
 
 ### The serving certificate
 
@@ -293,14 +292,23 @@ has to name the addresses the aggregator dials. `o11y-system` appears there,
 in `apiservice.yaml`, and in `rbac.yaml`'s subjects; a consumer deploying
 elsewhere patches all three together.
 
-The consequence for the aggregator is that there is no `Certificate` to point
-`cert-manager.io/inject-ca-from` at any more. The APIService names the issuing
-CA's `Secret` instead (`cert-manager.io/inject-ca-from-secret`), which is the
-thing the aggregator actually has to trust; that `Secret` needs
-`cert-manager.io/allow-direct-injection: "true"` on it before cainjector will
-read it. `insecureSkipTLSVerify` stays `false`. `apiservice.yaml` documents the
-two alternatives -- patching `caBundle` by hand, or giving up backend
-verification -- and when each is defensible.
+**Which issuer you name is a correctness question, not a preference.** The
+aggregator verifies this certificate, and the APIService carries no `caBundle`
+with `insecureSkipTLSVerify: false`, so the certificate has to be signed by a CA
+the aggregator already trusts -- in practice the control plane's own CA, the one
+that signs its own certificates. Name that issuer and there is nothing to
+inject, nothing to renew in step, and no extra CA in the aggregator's trust for
+one backend. This is how the activity service is registered: no `caBundle`, no
+annotation, no `insecureSkipTLSVerify`.
+
+Naming any other CA leaves the aggregator unable to verify the backend, and
+every query fails at the proxy hop with `x509: certificate signed by unknown
+authority` before authorization is ever reached. Recovering from that means
+injecting a bundle into the APIService, which
+[`apiservice.yaml`](../config/queryapi-api-registration/apiservice.yaml)
+documents along with the two other escape hatches and when each is defensible.
+`config/queryapi-e2e/` takes that route deliberately, because a throwaway
+cluster has no control plane CA to borrow.
 
 ### Overriding a flag
 
@@ -339,8 +347,8 @@ patchable the same way.
 [`config/queryapi-e2e/`](../config/queryapi-e2e/) is an overlay over
 `config/queryapi` for a cluster that has none of the above. It adds a
 self-signed CA, repoints the CSI volume at it (as a namespaced `Issuer`),
-repoints the APIService's CA injection at that CA's `Secret`, and opens the
-NetworkPolicy. `kustomize build config/queryapi-e2e` applies to an empty
+injects that CA into the APIService -- which the base deliberately does not do
+-- and opens the NetworkPolicy. `kustomize build config/queryapi-e2e` applies to an empty
 cluster and works.
 
 The CA is bootstrapped -- a selfSigned `Issuer` issues a CA `Certificate`,
