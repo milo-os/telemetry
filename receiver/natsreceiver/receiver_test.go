@@ -517,6 +517,96 @@ func TestReceiver_LastDeliveryRace_ConcurrentDeliverAndScrape(t *testing.T) {
 	<-done
 }
 
+// sumForMetric returns the summed int64 data points of the named instrument,
+// and whether the instrument was found at all.
+func sumForMetric(t *testing.T, reader sdkmetric.Reader, name string) (int64, bool) {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(t.Context(), &rm))
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != name {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("%s is %T, not a Sum[int64]", name, m.Data)
+			}
+			var total int64
+			for _, dp := range sum.DataPoints {
+				total += dp.Value
+			}
+			return total, true
+		}
+	}
+	return 0, false
+}
+
+// TestReceiver_ReportsAcceptedLogRecords covers the receiver's half of the
+// pipeline's standard observability. Without an ObsReport the collector emits
+// no otelcol_receiver_* series for this component at all, so the only way to
+// see what the sink ingests is to infer it from the JetStream consumer's
+// delivery rate -- which measures the broker, not the receiver, and cannot
+// show records the receiver rejected.
+func TestReceiver_ReportsAcceptedLogRecords(t *testing.T) {
+	srv := startTestServer(t)
+	reader := sdkmetric.NewManualReader()
+
+	cfg := &Config{URL: srv.ClientURL(), Logs: SignalConfig{Subject: "otlp.logs", Encoding: "otlp_proto"}}
+	cfg.TLS.Insecure = true
+	set := receivertest.NewNopSettings(receivertest.NopType)
+	set.MeterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	rcv, err := newLogsReceiver(cfg, set, new(consumertest.LogsSink))
+	require.NoError(t, err)
+	require.NoError(t, rcv.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, rcv.Shutdown(t.Context())) })
+
+	// Three records in one payload: the count must reflect records, not
+	// messages, or the metric silently under-reports every batched publish.
+	ld := plog.NewLogs()
+	recs := ld.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords()
+	for range 3 {
+		recs.AppendEmpty().Body().SetStr("accepted")
+	}
+	payload, err := (&plog.ProtoMarshaler{}).MarshalLogs(ld)
+	require.NoError(t, err)
+	require.NoError(t, rcv.deliver(t.Context(), payload))
+
+	got, found := sumForMetric(t, reader, "otelcol_receiver_accepted_log_records")
+	require.True(t, found, "otelcol_receiver_accepted_log_records is not emitted")
+	require.Equal(t, int64(3), got)
+}
+
+// TestReceiver_ReportsRefusedLogRecordsOnConsumerError guards the failure
+// signal. A downstream rejection is nak'd and logged, but nothing counts it,
+// so a sink refusing every record looks identical to one receiving nothing.
+func TestReceiver_ReportsRefusedLogRecordsOnConsumerError(t *testing.T) {
+	srv := startTestServer(t)
+	reader := sdkmetric.NewManualReader()
+
+	cfg := &Config{URL: srv.ClientURL(), Logs: SignalConfig{Subject: "otlp.logs", Encoding: "otlp_proto"}}
+	cfg.TLS.Insecure = true
+	set := receivertest.NewNopSettings(receivertest.NopType)
+	set.MeterProvider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	refusing := consumertest.NewErr(errors.New("clickhouse unavailable"))
+	rcv, err := newLogsReceiver(cfg, set, refusing)
+	require.NoError(t, err)
+	require.NoError(t, rcv.Start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, rcv.Shutdown(t.Context())) })
+
+	ld := plog.NewLogs()
+	ld.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords().AppendEmpty().Body().SetStr("refused")
+	payload, err := (&plog.ProtoMarshaler{}).MarshalLogs(ld)
+	require.NoError(t, err)
+	require.Error(t, rcv.deliver(t.Context(), payload))
+
+	got, found := sumForMetric(t, reader, "otelcol_receiver_refused_log_records")
+	require.True(t, found, "otelcol_receiver_refused_log_records is not emitted")
+	require.Equal(t, int64(1), got)
+}
+
 func TestNewUnmarshalers_UnsupportedEncoding(t *testing.T) {
 	_, err := newLogsUnmarshaler("bogus")
 	require.Error(t, err)
