@@ -1,0 +1,36 @@
+@startuml ingestion-pipeline
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_LANDSCAPE()
+LAYOUT_WITH_LEGEND()
+
+title Customer-Facing Logs — Ingestion Pipeline (AI Edge v1)
+
+' External producers
+System_Ext(ai_edge, "AI Edge Data Plane", "Envoy + WAF sidecar handling customer HTTP traffic. Emits one OTLP log record per request (access) and per WAF rule match (waf). Stamps tenant.kind / tenant.name and resource identity labels on every record.")
+
+' Catalog and per-tenant policies — read by the gateway via cached informers
+System_Ext(catalog, "Telemetry Catalog", "MonitoredResourceType and LogDefinition CRDs published by the telemetry-services-operator. Defines the legal label vocabulary per resource type and the consumer / producer destinations per log.")
+System_Ext(policies, "Per-Tenant Policies", "LogCollectionPolicy and LogRedactionPolicy resources.")
+
+' Ingestion system boundary
+System_Boundary(ingest, "Ingestion Pipeline") {
+    Container(gateway, "OTel Collector Gateway", "OpenTelemetry Collector, regional Deployment", "Validates tenant.kind / tenant.name. Resolves tenant_id via the project catalog. Validates resource attributes against catalog vocabulary. Fans out one record per declared destination (consumer / producer), stamping consumer_name on producer records. Drops/hashes per redaction allowlist.")
+    ContainerQueue(nats, "NATS JetStream", "Durable subject", "Buffers records between the gateway and ClickHouse. Provides backpressure if ClickHouse is down and feeds the live-tail handler.")
+    Container(writer, "ClickHouse Writer", "Go consumer", "Drains NATS into platform_logs in batches.")
+    ContainerDb(clickhouse, "ClickHouse", "platform_logs table", "MergeTree, partitioned by (tenant_id, month). Sorted by (tenant_id, resource_type, resource_name, log_id, timestamp). Table TTL on timestamp.")
+}
+
+' Producer flow (ingress)
+Rel_D(ai_edge, gateway, "Emit log records (OTLP/gRPC) with tenancy + resource labels.")
+
+' Gateway lookups
+Rel_R(gateway, catalog, "Validate label vocabulary; resolve destinations", "informer cache")
+Rel_R(gateway, policies, "Apply collection / redaction", "informer cache")
+
+' Successful write path
+Rel_D(gateway, nats, "Publish per-destination records", "NATS")
+Rel_D(nats, writer, "Consume", "NATS")
+Rel_D(writer, clickhouse, "Batch insert", "TCP/9000")
+
+@enduml
