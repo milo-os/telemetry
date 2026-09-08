@@ -67,18 +67,31 @@ spec:
               value: "/var/run/queryapi/tls/tls.crt"
             - name: TLS_PRIVATE_KEY_FILE
               value: "/var/run/queryapi/tls/tls.key"
-            # Empty means in-cluster, as in activity's deployment: the mounted
-            # service account token reaches Milo's apiserver, which is where
-            # the requestheader client CA, TokenReview and SubjectAccessReview
-            # all live.
+            # Empty means in-cluster: TokenReview and SubjectAccessReview go
+            # to the API server queryapi runs next to, using the mounted
+            # service account token.
+            #
+            # That is right only when queryapi runs inside the control plane
+            # that authenticates callers and evaluates IAM. A queryapi deployed
+            # beside its storage instead -- in a cluster the aggregator merely
+            # proxies into -- must set both to a kubeconfig for that control
+            # plane. Nothing fails loudly if you do not: the local API server
+            # answers the reviews itself, knows none of the permissions in
+            # internal/authz/permissions.go, and denies every query. Send one
+            # SubjectAccessReview by hand before trusting an allow.
             - name: AUTHENTICATION_KUBECONFIG
               value: ""
             - name: AUTHORIZATION_KUBECONFIG
               value: ""
-            # Empty means "read the CA from the extension-apiserver-authentication
-            # ConfigMap in kube-system" rather than from a file, which is what
-            # the RoleBinding in rbac.yaml grants. Set this only to pin a CA
-            # file instead.
+            # Empty means the front proxy's CA is read from the
+            # extension-apiserver-authentication ConfigMap in kube-system -- in
+            # whichever cluster AUTHENTICATION_KUBECONFIG selects, which is the
+            # local one while that is empty. rbac.yaml grants that read.
+            #
+            # Naming a file here skips the ConfigMap lookup, and the RoleBinding
+            # with it. Prefer the file whenever the front proxy is not the local
+            # cluster's: this must be the CA that signs the aggregator's client
+            # certificate, and no other.
             - name: REQUESTHEADER_CLIENT_CA_FILE
               value: ""
             # The paths served without a SubjectAccessReview. The probes below

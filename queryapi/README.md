@@ -64,9 +64,9 @@ them without restating the rest. See [Deployment](#deployment).
 | `--bind-address` | `0.0.0.0` |
 | `--tls-cert-file`, `--tls-private-key-file` | none -- self-signs into `--cert-dir` |
 | `--cert-dir` | `apiserver.local.config/certificates` |
-| `--authentication-kubeconfig` | in-cluster config |
+| `--authentication-kubeconfig` | in-cluster config -- see [Where the reviews go](#where-the-reviews-go) |
 | `--requestheader-client-ca-file` | empty: read the CA from `extension-apiserver-authentication` in `kube-system` |
-| `--authorization-kubeconfig` | in-cluster config |
+| `--authorization-kubeconfig` | in-cluster config -- see [Where the reviews go](#where-the-reviews-go) |
 | `--authorization-always-allow-paths` | `/healthz,/readyz,/livez,/metrics` |
 | `--authorization-webhook-cache-authorized-ttl` | `10s` |
 | `--authorization-webhook-cache-unauthorized-ttl` | `10s` |
@@ -127,9 +127,11 @@ authenticator**, which is not optional and has no reduced mode:
 
 - queryapi terminates TLS itself, so every connection can carry a client
   certificate;
-- the certificate is verified against the front proxy's CA, read from the
-  `extension-apiserver-authentication` ConfigMap in `kube-system` (hence the
-  RoleBinding in [`config/queryapi/rbac.yaml`](../config/queryapi/rbac.yaml));
+- the certificate is verified against the front proxy's CA, read by default
+  from the `extension-apiserver-authentication` ConfigMap in `kube-system` of
+  whichever cluster `--authentication-kubeconfig` selects (hence the RoleBinding
+  in [`config/queryapi/rbac.yaml`](../config/queryapi/rbac.yaml)), or from
+  `--requestheader-client-ca-file` when that names one;
 - only then are the `X-Remote-*` headers on that connection believed;
 - a caller presenting a bearer token directly is authenticated by `TokenReview`
   instead.
@@ -174,6 +176,31 @@ hostnames and customer identifiers. All six are granted by the
 501 today and are gated anyway, so they cannot ship unguarded.
 
 `queryapi_authorization_total{resource,verb,decision}` reports the outcomes.
+
+### Where the reviews go
+
+Both delegating options default to in-cluster config, which means the API
+server queryapi is running next to, reached with its mounted service account
+token. That is correct when queryapi runs **inside the control plane** that
+authenticates callers and evaluates IAM.
+
+It is wrong, quietly, when queryapi runs somewhere else -- beside its storage,
+in a cluster the aggregator only proxies into. Then:
+
+- `SubjectAccessReview`s go to the local API server, which knows none of the
+  permissions in `internal/authz/permissions.go` and denies every query;
+- the front proxy's CA is read from the local
+  `extension-apiserver-authentication`, which holds that cluster's front proxy
+  rather than the one whose client certificate is actually arriving.
+
+Neither failure announces itself as a misconfiguration: the first is a 403 that
+looks like a missing role, the second a 401 that looks like a bad certificate.
+A deployment in that shape must set `--authentication-kubeconfig` and
+`--authorization-kubeconfig` to a kubeconfig for the control plane, with a
+credential that may create `SubjectAccessReview`s there, and point
+`--requestheader-client-ca-file` at that control plane's CA -- which also
+retires the `kube-system` RoleBinding, since naming the file skips the ConfigMap
+lookup. Confirm with one `SubjectAccessReview` by hand before trusting an allow.
 
 ### Why an unmapped path cannot be served
 
@@ -229,7 +256,10 @@ still worth having, and it is also what limits who can assert
 
 [`config/queryapi/`](../config/queryapi/) is the bundle. It is deliberately not
 self-sufficient: it names three things the consumer owns, and applying it
-without patching them will not work.
+without patching them will not work. A consumer running queryapi outside the
+control plane has a fourth thing to supply, which is not a placeholder because
+the defaults are valid values rather than obviously empty ones -- see
+[Where the reviews go](#where-the-reviews-go).
 
 | PLACEHOLDER | Where | What to supply |
 | --- | --- | --- |
