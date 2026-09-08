@@ -163,6 +163,19 @@ func TestStaticUsers(t *testing.T) {
 	if sink["user"] != "CN=o11y-sink-nats-client" {
 		t.Fatalf("sink user = %v", sink["user"])
 	}
+
+	// A pull consumer acks by publishing to $JS.ACK.>; without it the sink
+	// pulls and never acks, and nothing ever leaves the stream.
+	sinkPub := mustStrSlice(t, sink, "publish")
+	var hasAck bool
+	for _, allow := range sinkPub {
+		if allow == "$JS.ACK.>" {
+			hasAck = true
+		}
+	}
+	if !hasAck {
+		t.Fatalf("sink publish = %v, want it to include $JS.ACK.>", sinkPub)
+	}
 }
 
 func TestRenderedValuesRoundTrip(t *testing.T) {
