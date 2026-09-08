@@ -52,6 +52,23 @@ func (it *rowIterator) Err() error { return it.err }
 
 func (it *rowIterator) Close() error { return it.rows.Close() }
 
+// internalLogAttributes exist only so the schema can derive a column from
+// them, so they never reach a caller's labels.
+var internalLogAttributes = map[string]struct{}{
+	"telemetry.observed_time_unix_nano": {},
+}
+
+// withoutInternalAttributes filters a label-name catalogue.
+func withoutInternalAttributes(names []string) []string {
+	kept := make([]string, 0, len(names))
+	for _, n := range names {
+		if _, internal := internalLogAttributes[n]; !internal {
+			kept = append(kept, n)
+		}
+	}
+	return kept
+}
+
 // assembleLabels builds a row's label set from the promoted columns (kept when
 // non-empty) plus every non-empty resource and log attribute.
 func assembleLabels(service, severity, trace string, resAttrs, logAttrs map[string]string) storage.LabelSet {
@@ -71,6 +88,9 @@ func assembleLabels(service, severity, trace string, resAttrs, logAttrs map[stri
 		}
 	}
 	for k, v := range logAttrs {
+		if _, internal := internalLogAttributes[k]; internal {
+			continue
+		}
 		if v != "" {
 			ls[k] = v
 		}

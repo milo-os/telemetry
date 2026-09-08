@@ -94,6 +94,17 @@ spec:
         limit_percentage: 75
         spike_limit_percentage: 20
 
+      # ObservedTimestamp has no exporter column, so it travels as an attribute
+      # the 000001 schema materializes. A key mismatch silently reads as 1970.
+      transform/observed_time:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - >-
+                set(log.attributes["telemetry.observed_time_unix_nano"], log.observed_time_unix_nano)
+                where log.observed_time_unix_nano != 0
+
       # Amortize clickhouseexporter INSERTs: the receiver delivers one message
       # per edge-published record.
       batch:
@@ -118,7 +129,9 @@ spec:
           key_file: /etc/otel/clickhouse-client/tls.key
         database: o11y
         # ProjectId is MATERIALIZED on the table, so no mapping setting needed.
-        logs_table_name: o11y.logs
+        # Bare name: the exporter qualifies it with `database`, so "o11y.logs"
+        # here becomes o11y.`o11y.logs`.
+        logs_table_name: logs
         # Schema is created by the clickhouse-migrate bundle, not this exporter.
         create_schema: false
         timeout: 10s
@@ -132,5 +145,5 @@ spec:
       pipelines:
         logs:
           receivers: [nats]
-          processors: [memory_limiter, batch]
+          processors: [memory_limiter, transform/observed_time, batch]
           exporters: [clickhouse]

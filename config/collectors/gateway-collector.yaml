@@ -62,6 +62,17 @@ spec:
         limit_percentage: 75
         spike_limit_percentage: 20
 
+      # The otlp receiver leaves observed_time_unix_nano at 0, so stamp it at
+      # receipt. The node agent's filelog receiver already sets it on read.
+      transform/observed_time:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - >-
+                set(log.observed_time_unix_nano, UnixNano(Now()))
+                where log.observed_time_unix_nano == 0
+
       # Splits multi-tenant OTLP batches into one synthetic Resource per
       # project before milo.project.id derivation, since that attribute is
       # resource-scoped but a single sender (e.g. Envoy's merged Gateway
@@ -171,5 +182,5 @@ spec:
       pipelines:
         logs:
           receivers: [otlp]
-          processors: [memory_limiter, groupbyattrs, k8sattributes, resource, transform/milo_project_id, batch, unbatch]
+          processors: [memory_limiter, transform/observed_time, groupbyattrs, k8sattributes, resource, transform/milo_project_id, batch, unbatch]
           exporters: [nats, debug]
