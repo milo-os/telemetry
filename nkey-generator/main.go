@@ -188,9 +188,11 @@ func staticUsers() []map[string]any {
 			map[string]string{"user": "CN=nack.nats.client"},
 			[]string{">"}, []string{">"},
 		),
+		// $JS.ACK.> is where a pull consumer publishes its acks; without it
+		// the sink pulls but never acks and the stream only grows.
 		permissionsMap(
 			map[string]string{"user": "CN=o11y-sink-nats-client"},
-			[]string{"$JS.API.>"}, []string{"o11y.>", "_INBOX.>"},
+			[]string{"$JS.API.>", "$JS.ACK.>"}, []string{"o11y.>", "_INBOX.>"},
 		),
 	}
 }
