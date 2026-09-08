@@ -156,8 +156,19 @@ Tenancy rides in the review. The caller's `iam.miloapis.com/parent-type` and
 project they name. There is no project field in `ResourceAttributes` to set,
 and nothing for queryapi to get wrong.
 
-What queryapi supplies is the vocabulary. A custom `RequestInfoResolver` maps
-each route onto one Milo permission:
+**There are two gates, and a caller needs a grant at each.** Milo's aggregator
+authorizes the proxy hop before queryapi ever sees the request, deriving
+attributes from the path with the stock Kubernetes resolver. Every Loki route is
+a `GET` under `.../logs/loki/...`, so all of them render identically as `get` on
+`logs`; the aggregator cannot tell them apart, and `o11y.miloapis.com/logs.get`
+therefore means only "may reach the log API". `metrics.get` is the same for
+metrics. Without it the request is refused at the proxy with a `Forbidden`
+naming a resource nobody declared, and queryapi records nothing -- it never
+arrived.
+
+What queryapi supplies is the vocabulary that gate cannot express. Its own
+`RequestInfoResolver` runs after the hop, where the route is known, and maps
+each one onto a specific permission:
 
 | Route (under `/apis/o11y.miloapis.com/v1alpha1`) | Permission |
 | --- | --- |
@@ -170,10 +181,14 @@ each route onto one Milo permission:
 
 `query` returns log lines or samples; the `get*` actions return only metadata
 about them, which is a separate boundary because label values carry pod names,
-hostnames and customer identifiers. All six are granted by the
-`telemetry.miloapis.com-viewer` role
+hostnames and customer identifiers. All six, plus the two coarse `get`
+permissions above, are granted by the `telemetry.miloapis.com-viewer` role
 ([`config/operator/iam/`](../config/operator/iam/)). The metrics routes return
 501 today and are gated anyway, so they cannot ship unguarded.
+
+The split is only enforceable here, not at the aggregator, so a metadata-only
+role depends on queryapi's check holding rather than on Milo refusing the
+request. That is true of every property queryapi enforces past the proxy hop.
 
 `queryapi_authorization_total{resource,verb,decision}` reports the outcomes.
 

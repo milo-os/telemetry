@@ -12,6 +12,11 @@ spec:
   plural: metrics
   singular: metric
   permissions:
+    # Milo's aggregator authorizes the proxy hop with the stock path parse, so
+    # every metrics route renders as `get` on `metrics`. It means "may reach
+    # the metrics API"; the actions below are queryapi's own, per route. See
+    # the logs ProtectedResource for the full explanation.
+    - get
     - query
     - getLabels
     - getSeries
