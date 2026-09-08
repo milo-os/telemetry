@@ -102,7 +102,7 @@ func (s *Store) LabelNames(ctx context.Context, tr storage.TimeRange) ([]string,
 	}
 	// The fixed schema columns are always in the catalogue regardless of data
 	// (openapi.yaml's /labels contract), so merge them and re-sort+dedupe.
-	names = append(names, fixedSchemaLabels()...)
+	names = append(withoutInternalAttributes(names), fixedSchemaLabels()...)
 	sort.Strings(names)
 	return dedupe(names), nil
 }

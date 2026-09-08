@@ -262,6 +262,32 @@ func TestAssembleLabels(t *testing.T) {
 	}
 }
 
+// The sink writes an observed-time attribute on every record, so it would
+// otherwise show up as a label on every row and in /labels.
+func TestInternalAttributesAreNotLabels(t *testing.T) {
+	ls := assembleLabels("envoy-gateway", "INFO", "",
+		nil,
+		map[string]string{"telemetry.observed_time_unix_nano": "1757340000000000000", "http.method": "GET"})
+
+	if _, leaked := ls["telemetry.observed_time_unix_nano"]; leaked {
+		t.Errorf("assembleLabels leaked the internal attribute: %v", ls)
+	}
+	if ls["http.method"] != "GET" {
+		t.Errorf("assembleLabels dropped a real attribute: %v", ls)
+	}
+
+	got := withoutInternalAttributes([]string{"http.method", "telemetry.observed_time_unix_nano", "resource_name"})
+	want := []string{"http.method", "resource_name"}
+	if len(got) != len(want) {
+		t.Fatalf("withoutInternalAttributes = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("withoutInternalAttributes[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func tr() storage.TimeRange {
 	return storage.TimeRange{Start: time.Unix(100, 0), End: time.Unix(200, 0)}
 }

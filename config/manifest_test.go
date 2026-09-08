@@ -135,3 +135,86 @@ func checkCSIVolumes(t *testing.T, path string, node any) {
 		}
 	}
 }
+
+func TestSinkLogsTableIsUnqualified(t *testing.T) {
+	const path = "collectors/sink-collector.yaml"
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+
+	var doc struct {
+		Spec struct {
+			Config struct {
+				Exporters struct {
+					ClickHouse struct {
+						Database      string `yaml:"database"`
+						LogsTableName string `yaml:"logs_table_name"`
+						Username      string `yaml:"username"`
+					} `yaml:"clickhouse"`
+				} `yaml:"exporters"`
+			} `yaml:"config"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	ch := doc.Spec.Config.Exporters.ClickHouse
+
+	// The exporter qualifies the table with `database` itself, so a dotted
+	// name here becomes o11y.`o11y.logs` and every INSERT fails with code 60.
+	if strings.Contains(ch.LogsTableName, ".") {
+		t.Errorf("%s: logs_table_name %q is qualified; the exporter prepends database %q, yielding %s.`%s`",
+			path, ch.LogsTableName, ch.Database, ch.Database, ch.LogsTableName)
+	}
+
+	// A certificate does not select the ClickHouse identity: unset, the
+	// driver sends "default" and authentication fails.
+	if ch.Username == "" {
+		t.Errorf("%s: clickhouse exporter names no username", path)
+	}
+}
+
+// observedTimeAttribute is the name the sink's transform and the schema's
+// ObservedTimestamp expression must agree on.
+const observedTimeAttribute = "telemetry.observed_time_unix_nano"
+
+// TestObservedTimeAttributeIsPlumbedEndToEnd guards the chain that populates
+// ObservedTimestamp. Broken, nothing errors -- rows just stop matching any
+// time window, since it is the partition/order/query key.
+func TestObservedTimeAttributeIsPlumbedEndToEnd(t *testing.T) {
+	const (
+		sinkPath    = "collectors/sink-collector.yaml"
+		gatewayPath = "collectors/gateway-collector.yaml"
+		schemaPath  = "clickhouse-migrations/migrations/000001_init.up.sql"
+	)
+
+	// The sink hands the value to the exporter as an attribute...
+	sink := readFile(t, sinkPath)
+	if !strings.Contains(sink, observedTimeAttribute) {
+		t.Errorf("%s: does not promote %s; ObservedTimestamp will fall back to insert time",
+			sinkPath, observedTimeAttribute)
+	}
+	if !strings.Contains(sink, "transform/observed_time") {
+		t.Errorf("%s: transform/observed_time is not in the logs pipeline", sinkPath)
+	}
+
+	// ...the schema reads that same attribute back out...
+	if schema := readFile(t, schemaPath); !strings.Contains(schema, observedTimeAttribute) {
+		t.Errorf("%s: does not materialize ObservedTimestamp from %s", schemaPath, observedTimeAttribute)
+	}
+
+	// ...and the gateway stamps it, since its otlp receiver leaves it at 0.
+	if gw := readFile(t, gatewayPath); !strings.Contains(gw, "observed_time_unix_nano") {
+		t.Errorf("%s: does not stamp observed_time_unix_nano on receipt", gatewayPath)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	return string(raw)
+}
