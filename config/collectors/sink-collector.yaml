@@ -109,7 +109,9 @@ spec:
         # Secure TCP endpoint of a ClickHouse replica, e.g.
         # tcp://chi-clickhouse-o11y-0-0.o11y-system.svc.cluster.local:9440.
         endpoint: ${clickhouse_endpoint}
-        # Client-cert auth only (no password), CN = o11y-sink-clickhouse-client.
+        # Cert CN maps to this user, but the driver still has to name it --
+        # unset, it sends "default" and auth fails.
+        username: o11y-sink-clickhouse-client
         tls:
           ca_file: /etc/otel/clickhouse-client/ca.crt
           cert_file: /etc/otel/clickhouse-client/tls.crt
