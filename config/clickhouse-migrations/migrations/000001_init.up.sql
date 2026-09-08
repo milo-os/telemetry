@@ -39,20 +39,9 @@ ORDER BY (ProjectId, ObservedTimestamp, ServiceName);
 
 -- Authorization.
 --
--- Two users share this table: ops (full read, provider-defined) and the
--- query-serving identity (the HTTP query layer, whose ClickHouse identity is
--- certificate-mapped in the provider's users.d/ssl_auth.xml). That identity's
--- literal username varies per deployment, so it is injected at migration
--- render time as {{QUERYAPI_USER}} (see clickhouse-migrate's
--- CLICKHOUSE_QUERYAPI_USER env var). It is granted SELECT only, scoped to
--- this database, plus the two privileges ClickHouse requires before a user
--- may read or set a custom setting -- without these, every query fails with
--- "unknown setting" the moment it tries to set telemetry_project_id -- and is
--- row-scoped by a policy keyed on that per-query custom setting the query
--- layer sets (a query without it matches no rows).
-
-GRANT SELECT ON logs TO `{{QUERYAPI_USER}}`;
-GRANT settings_allow_custom_setting_read, settings_allow_custom_setting_write ON *.* TO `{{QUERYAPI_USER}}`;
+-- {{QUERYAPI_USER}} is rendered from CLICKHOUSE_QUERYAPI_USER. Grants live in
+-- the deployment users.d entry, not here -- SQL cannot GRANT to users_xml.
+-- Policies are not in users_xml, so this one attaches. Unset setting, no rows.
 
 CREATE ROW POLICY IF NOT EXISTS queryapi_project_isolation
 ON logs
