@@ -16,9 +16,24 @@ import (
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/ptrace"
 	"go.opentelemetry.io/collector/receiver"
+	"go.opentelemetry.io/collector/receiver/receiverhelper"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 )
+
+// transport labels the otelcol_receiver_* series this component emits.
+const transport = "nats"
+
+// newObsReport builds the reporter behind otelcol_receiver_accepted_* and
+// otelcol_receiver_refused_*. Every receiver has to emit these itself; without
+// it the component is invisible to the collector's standard dashboards.
+func newObsReport(set receiver.Settings) (*receiverhelper.ObsReport, error) {
+	return receiverhelper.NewObsReport(receiverhelper.ObsReportSettings{
+		ReceiverID:             set.ID,
+		Transport:              transport,
+		ReceiverCreateSettings: set,
+	})
+}
 
 // nakRedeliveryDelay is passed to NakWithDelay for retryable (e.g. downstream
 // export) failures. A bare Nak would spin a message in a tight, backoff-free
@@ -64,16 +79,28 @@ func newLogsReceiver(cfg *Config, set receiver.Settings, next consumer.Logs) (*n
 	if err != nil {
 		return nil, err
 	}
+	obsrecv, err := newObsReport(set)
+	if err != nil {
+		return nil, err
+	}
+	encoding := cfg.Logs.Encoding
 	return &natsReceiver{
 		cfg:    cfg,
 		set:    set,
 		signal: cfg.Logs,
 		deliverPayload: func(ctx context.Context, payload []byte) error {
+			ctx = obsrecv.StartLogsOp(ctx)
 			logs, err := unmarshaler.UnmarshalLogs(payload)
 			if err != nil {
+				obsrecv.EndLogsOp(ctx, encoding, 0, err)
 				return &errUnmarshal{err: err}
 			}
-			return next.ConsumeLogs(ctx, logs)
+			// Counted before Consume: pdata is not safe to read once the next
+			// consumer owns it.
+			count := logs.LogRecordCount()
+			err = next.ConsumeLogs(ctx, logs)
+			obsrecv.EndLogsOp(ctx, encoding, count, err)
+			return err
 		},
 	}, nil
 }
@@ -83,16 +110,26 @@ func newMetricsReceiver(cfg *Config, set receiver.Settings, next consumer.Metric
 	if err != nil {
 		return nil, err
 	}
+	obsrecv, err := newObsReport(set)
+	if err != nil {
+		return nil, err
+	}
+	encoding := cfg.Metrics.Encoding
 	return &natsReceiver{
 		cfg:    cfg,
 		set:    set,
 		signal: cfg.Metrics,
 		deliverPayload: func(ctx context.Context, payload []byte) error {
+			ctx = obsrecv.StartMetricsOp(ctx)
 			metrics, err := unmarshaler.UnmarshalMetrics(payload)
 			if err != nil {
+				obsrecv.EndMetricsOp(ctx, encoding, 0, err)
 				return &errUnmarshal{err: err}
 			}
-			return next.ConsumeMetrics(ctx, metrics)
+			count := metrics.DataPointCount()
+			err = next.ConsumeMetrics(ctx, metrics)
+			obsrecv.EndMetricsOp(ctx, encoding, count, err)
+			return err
 		},
 	}, nil
 }
@@ -102,16 +139,26 @@ func newTracesReceiver(cfg *Config, set receiver.Settings, next consumer.Traces)
 	if err != nil {
 		return nil, err
 	}
+	obsrecv, err := newObsReport(set)
+	if err != nil {
+		return nil, err
+	}
+	encoding := cfg.Traces.Encoding
 	return &natsReceiver{
 		cfg:    cfg,
 		set:    set,
 		signal: cfg.Traces,
 		deliverPayload: func(ctx context.Context, payload []byte) error {
+			ctx = obsrecv.StartTracesOp(ctx)
 			traces, err := unmarshaler.UnmarshalTraces(payload)
 			if err != nil {
+				obsrecv.EndTracesOp(ctx, encoding, 0, err)
 				return &errUnmarshal{err: err}
 			}
-			return next.ConsumeTraces(ctx, traces)
+			count := traces.SpanCount()
+			err = next.ConsumeTraces(ctx, traces)
+			obsrecv.EndTracesOp(ctx, encoding, count, err)
+			return err
 		},
 	}, nil
 }
