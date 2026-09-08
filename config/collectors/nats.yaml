@@ -44,10 +44,6 @@ spec:
     metadata:
       labels:
         app: nats
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "7777"
-        prometheus.io/path: "/metrics"
     spec:
       containers:
         - name: metrics
@@ -56,6 +52,12 @@ spec:
             - -varz
             - -connz
             - -subz
+            # The leaf to the hub is this broker's only egress; leafz is what
+            # reports whether it is up and carrying messages.
+            - -leafz
+            # Match the hub chart's prefix so one query spans edge and hub.
+            # Unset, these arrive as gnatsd_* and no dashboard finds them.
+            - -prefix=nats
             - -addr=0.0.0.0
             - -port=7777
             - http://localhost:8222
@@ -140,3 +142,17 @@ spec:
     - name: metrics
       port: 7777
       targetPort: 7777
+---
+# vmagent selects every PodMonitor in the cluster (selectAllByDefault) and
+# stamps the `cluster` label on remote write, so this is all it takes to land
+# edge broker metrics next to the hub's in VictoriaMetrics.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: nats
+spec:
+  selector:
+    matchLabels:
+      app: nats
+  podMetricsEndpoints:
+    - port: metrics

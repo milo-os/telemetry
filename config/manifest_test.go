@@ -210,6 +210,89 @@ func TestObservedTimeAttributeIsPlumbedEndToEnd(t *testing.T) {
 	}
 }
 
+// TestEdgeNATSExporterIsScraped guards the edge broker's metrics path. vmagent
+// discovers targets from PodMonitors, not from prometheus.io annotations, so
+// without one the exporter serves :7777 to nobody and every edge NATS panel
+// reads empty -- indistinguishable from an idle broker. A port name that does
+// not resolve to a container port fails the same silent way.
+func TestEdgeNATSExporterIsScraped(t *testing.T) {
+	const path = "collectors/nats.yaml"
+
+	var (
+		monitorPorts []string
+		podLabels    map[string]string
+		portNames    = map[string]bool{}
+		selector     map[string]string
+	)
+
+	dec := yaml.NewDecoder(strings.NewReader(readFile(t, path)))
+	for {
+		var doc struct {
+			Kind string `yaml:"kind"`
+			Spec struct {
+				// PodMonitor
+				Selector struct {
+					MatchLabels map[string]string `yaml:"matchLabels"`
+				} `yaml:"selector"`
+				PodMetricsEndpoints []struct {
+					Port string `yaml:"port"`
+				} `yaml:"podMetricsEndpoints"`
+				// Deployment
+				Template struct {
+					Metadata struct {
+						Labels map[string]string `yaml:"labels"`
+					} `yaml:"metadata"`
+					Spec struct {
+						Containers []struct {
+							Ports []struct {
+								Name string `yaml:"name"`
+							} `yaml:"ports"`
+						} `yaml:"containers"`
+					} `yaml:"spec"`
+				} `yaml:"template"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+
+		switch doc.Kind {
+		case "PodMonitor":
+			selector = doc.Spec.Selector.MatchLabels
+			for _, ep := range doc.Spec.PodMetricsEndpoints {
+				monitorPorts = append(monitorPorts, ep.Port)
+			}
+		case "Deployment":
+			podLabels = doc.Spec.Template.Metadata.Labels
+			for _, c := range doc.Spec.Template.Spec.Containers {
+				for _, p := range c.Ports {
+					portNames[p.Name] = true
+				}
+			}
+		}
+	}
+
+	if len(monitorPorts) == 0 {
+		t.Fatalf("%s: no PodMonitor; the exporter sidecar is never scraped", path)
+	}
+
+	if len(selector) == 0 {
+		t.Errorf("%s: PodMonitor selects on no labels", path)
+	}
+	for k, v := range selector {
+		if podLabels[k] != v {
+			t.Errorf("%s: PodMonitor selects %s=%q, but the nats pod template has %s=%q",
+				path, k, v, k, podLabels[k])
+		}
+	}
+
+	for _, port := range monitorPorts {
+		if !portNames[port] {
+			t.Errorf("%s: PodMonitor scrapes port %q, which no container declares", path, port)
+		}
+	}
+}
+
 func readFile(t *testing.T, path string) string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
