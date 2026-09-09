@@ -50,6 +50,23 @@ rule 2, so a bad file fails CI rather than a deploy:
 task clickhouse-migrate:check-migrations
 ```
 
+## Creating a client shell
+
+For when you need to connect to the database via a shell (for instance, to
+recover from a dirty database).
+
+```
+kubectl apply -f ch-shell.yaml
+
+kubectl -n o11y-system exec -it ch-shell -- clickhouse-client \
+  --host chi-clickhouse-o11y-0-0.o11y-system.svc.cluster.local \
+  --port 9440 --secure --user clickhouse-migrations-client
+
+# container has live creds, so delete the container when you're done
+
+kubectl -n o11y-system delete -f ch-shell.yaml
+```
+
 ## Recovering from a dirty database
 
 migrate marks a version dirty *before* running it, so a migration that fails
