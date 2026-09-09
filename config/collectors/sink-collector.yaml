@@ -1,0 +1,149 @@
+# Hub-side NATS -> ClickHouse sink. Reads the hub JetStream stream via the
+# pre-existing `o11y-sink-collector` durable consumer (filter `o11y.logs.>`)
+# and writes to the `o11y.logs` MergeTree table. The stream/consumer/ClickHouse
+# live in the consuming platform, not here -- this is the collector workload
+# only. ${...} placeholders are overlaid at publish/consume time (see
+# .github/workflows/publish.yaml and the kustomization).
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: o11y-sink-collector
+spec:
+  mode: deployment
+  # One replica: the natsreceiver binds a single durable consumer, which two
+  # replicas would race on. Durability comes from the consumer, not scaling.
+  replicas: 1
+  managementState: managed
+  # Custom otelcol/ distribution (natsreceiver + contrib clickhouseexporter).
+  # Tag overlaid at publish time; see .github/workflows/publish.yaml.
+  image: ghcr.io/milo-os/o11y/otelcol:v0.0.0-dev
+  imagePullPolicy: Always
+  observability:
+    metrics:
+      enableMetrics: true
+  resources:
+    requests:
+      cpu: 150m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  volumes:
+    # mTLS client cert for the hub NATS client port; issuer patched by the
+    # consumer (cf. clickhouse-migrate Job's client-certs volume).
+    - name: nats-client-certs
+      csi:
+        driver: csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          csi.cert-manager.io/issuer-name: PLACEHOLDER-issuer
+          csi.cert-manager.io/issuer-kind: Issuer
+          csi.cert-manager.io/common-name: o11y-sink-nats-client
+          csi.cert-manager.io/duration: "2160h"
+          csi.cert-manager.io/renew-before: "360h"
+          csi.cert-manager.io/key-usages: "client auth"
+    # mTLS client cert for ClickHouse, CN matching an ssl_certificates user
+    # on the target CHi (infra provisions o11y-sink-clickhouse-client).
+    - name: clickhouse-client-certs
+      csi:
+        driver: csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          csi.cert-manager.io/issuer-name: PLACEHOLDER-issuer
+          csi.cert-manager.io/issuer-kind: Issuer
+          csi.cert-manager.io/common-name: o11y-sink-clickhouse-client
+          csi.cert-manager.io/duration: "2160h"
+          csi.cert-manager.io/renew-before: "360h"
+          csi.cert-manager.io/key-usages: "client auth"
+  volumeMounts:
+    - name: nats-client-certs
+      mountPath: /etc/otel/nats-client
+      readOnly: true
+    - name: clickhouse-client-certs
+      mountPath: /etc/otel/clickhouse-client
+      readOnly: true
+  config:
+    receivers:
+      # Binds the pre-existing `o11y-sink-collector` durable consumer on the
+      # `o11y` stream (receiver never creates it; see natsreceiver/config.go).
+      nats:
+        # Hub TLS client port, e.g. tls://nats.o11y-system.svc.cluster.local:4222.
+        url: ${nats_url}
+        stream: o11y
+        consumer_name: o11y-sink-collector
+        tls:
+          ca_file: /etc/otel/nats-client/ca.crt
+          cert_file: /etc/otel/nats-client/tls.crt
+          key_file: /etc/otel/nats-client/tls.key
+        logs:
+          subject: o11y.logs.>
+          encoding: otlp_proto
+        # natsreceiver Validate() requires a subject on every signal type even
+        # when unused, so give metrics/traces harmless unused subjects. Neither
+        # pipeline is wired up; this stays the logs-only sink.
+        metrics:
+          subject: o11y.unused.metrics
+          encoding: otlp_proto
+        traces:
+          subject: o11y.unused.traces
+          encoding: otlp_proto
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 20
+
+      # ObservedTimestamp has no exporter column, so it travels as an attribute
+      # the 000001 schema materializes. A key mismatch silently reads as 1970.
+      transform/observed_time:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - >-
+                set(log.attributes["telemetry.observed_time_unix_nano"], log.observed_time_unix_nano)
+                where log.observed_time_unix_nano != 0
+
+      # Amortize clickhouseexporter INSERTs: the receiver delivers one message
+      # per edge-published record.
+      batch:
+        timeout: 10s
+        send_batch_size: 512
+
+    exporters:
+      # Contrib clickhouseexporter registers under the id `clickhouse`, so the
+      # exporter must be named `clickhouse` (not clickhouse_logs) to resolve.
+      # Sibling metrics/traces pipelines can be added later with their own
+      # receiver+exporter; this bundle is the logs sink only.
+      clickhouse:
+        # Secure TCP endpoint of a ClickHouse replica, e.g.
+        # tcp://chi-clickhouse-o11y-0-0.o11y-system.svc.cluster.local:9440.
+        endpoint: ${clickhouse_endpoint}
+        # Cert CN maps to this user, but the driver still has to name it --
+        # unset, it sends "default" and auth fails.
+        username: o11y-sink-clickhouse-client
+        tls:
+          ca_file: /etc/otel/clickhouse-client/ca.crt
+          cert_file: /etc/otel/clickhouse-client/tls.crt
+          key_file: /etc/otel/clickhouse-client/tls.key
+        database: o11y
+        # ProjectId is MATERIALIZED on the table, so no mapping setting needed.
+        # Bare name: the exporter qualifies it with `database`, so "o11y.logs"
+        # here becomes o11y.`o11y.logs`.
+        logs_table_name: logs
+        # Schema is created by the clickhouse-migrate bundle, not this exporter.
+        create_schema: false
+        timeout: 10s
+        retry_on_failure:
+          enabled: true
+          initial_interval: 5s
+          max_interval: 30s
+          max_elapsed_time: 300s
+
+    service:
+      pipelines:
+        logs:
+          receivers: [nats]
+          processors: [memory_limiter, transform/observed_time, batch]
+          exporters: [clickhouse]

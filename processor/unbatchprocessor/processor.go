@@ -35,12 +35,11 @@ func (p *unbatchLogs) ConsumeLogs(ctx context.Context, ld plog.Logs) error {
 	return nil
 }
 
-// splitLogs returns one plog.Logs per log record in ld, each carrying a
-// copy of its parent ResourceLogs' Resource and ScopeLogs' Scope. ld is
-// returned unchanged (as its own single-element slice) when it already
-// contains at most one record, so unbatch is a no-op when chained after
-// itself or another unbatch-shaped processor. A ld with zero records
-// produces no output at all, rather than an empty downstream call.
+// splitLogs returns one plog.Logs per log record, each carrying a copy of its
+// parent ResourceLogs' Resource and ScopeLogs' Scope. A ld with at most one
+// record is returned unchanged (as its own one-element slice), so unbatch is a
+// no-op when chained after itself or another unbatch-shaped processor; a
+// zero-record ld produces no output.
 func splitLogs(ld plog.Logs) []plog.Logs {
 	switch ld.LogRecordCount() {
 	case 0:
@@ -151,12 +150,11 @@ func (p *unbatchMetrics) ConsumeMetrics(ctx context.Context, md pmetric.Metrics)
 }
 
 // splitMetrics returns one pmetric.Metrics per data point in md. Unlike
-// logs/traces, metrics have no single unified "record" type -- each metric
-// type (Gauge, Sum, Histogram, ExponentialHistogram, Summary) carries its
-// own DataPoints collection, so the metric-level metadata (name,
-// description, unit, and type-specific fields like aggregation temporality)
-// must be copied onto each single-data-point output alongside the one data
-// point it carries.
+// logs/traces, metrics have no single "record" type -- each metric type
+// (Gauge, Sum, Histogram, ExponentialHistogram, Summary) carries its own
+// DataPoints, so the metric-level metadata (name, description, unit, and
+// type-specific fields like aggregation temporality) is copied onto each
+// single-data-point output.
 func splitMetrics(md pmetric.Metrics) []pmetric.Metrics {
 	switch md.DataPointCount() {
 	case 0:

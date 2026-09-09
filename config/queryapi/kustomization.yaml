@@ -1,0 +1,22 @@
+# The deployable queryapi bundle. It ships no Issuer and no Certificate: the
+# serving certificate comes from the cert-manager CSI driver against an issuer
+# the *consumer* owns (deployment.yaml's PLACEHOLDER-issuer), the way the
+# collectors do it. A cluster with no such issuer wants config/queryapi-e2e/,
+# which supplies a self-signed one and points this deployment at it.
+#
+# Three PLACEHOLDERs must be patched before this applies cleanly:
+#   - deployment.yaml     csi.cert-manager.io/issuer-name
+#   - networkpolicy.yaml  the milo-apiserver namespace selector
+#   - ../queryapi-api-registration/apiservice.yaml  the issuing CA's secret
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - rbac.yaml
+
+images:
+  - name: ghcr.io/milo-os/o11y/queryapi
+    newTag: latest

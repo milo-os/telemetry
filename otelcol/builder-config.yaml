@@ -1,12 +1,13 @@
-# OCB (go.opentelemetry.io/collector/cmd/builder) manifest for the custom
-# collector distribution used by gateway-collector and node-agent-collector
-# (config/edge-collectors/). Includes every component those two collector
-# configs reference, plus unbatch/nats for exporting to NATS directly --
-# there is no separate bridge collector.
+# OCB (go.opentelemetry.io/collector/cmd/builder) manifest that builds the
+# otelcol binary/image (ghcr.io/milo-os/o11y/otelcol). This is the collector
+# engine that every OpenTelemetryCollector CR under config/collectors/ runs
+# on: gateway-collector, node-agent-collector (edge) and o11y-sink-collector
+# (hub). Includes every component those collector configs reference, plus
+# unbatch/nats for exporting to NATS directly (natsreceiver on the hub sink)
 dist:
   module: go.datum.net/o11y/otelcol
   name: otelcol
-  description: Datum o11y edge collector distribution (contrib + unbatch/nats)
+  description: Datum o11y collector distribution (contrib + unbatch/nats)
   version: 0.1.0
   output_path: ./_build
 

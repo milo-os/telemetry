@@ -1,0 +1,86 @@
+# queryapi for an e2e / throwaway cluster: everything config/queryapi ships,
+# plus the pieces a real environment is expected to bring and a test one has
+# not got -- a certificate authority, and the APIService pointed at it.
+#
+# ## Why an overlay and not a Component
+#
+# config/queryapi-api-registration/ is a Component because it is an optional
+# *slice* of someone else's deployment: a consumer that already builds queryapi
+# adds the APIService to it. This is the opposite -- it is a whole deployable
+# bundle, and its whole point is that `kustomize build config/queryapi-e2e`
+# yields something that applies to an empty cluster and works. A Component
+# cannot do that: it has no base, so its patches have nothing to land on and it
+# is not applyable on its own. Hence `resources: ../queryapi`, the way
+# config/operator/dev overlays config/operator.
+#
+# What it changes, and nothing else:
+#   - adds a self-signed CA (issuer.yaml);
+#   - points the deployment's CSI volume at that CA instead of
+#     PLACEHOLDER-issuer, and at an Issuer instead of a ClusterIssuer;
+#   - injects that CA into the APIService, which the base deliberately does
+#     not do -- in a real environment the serving certificate comes from the
+#     control plane's own CA and there is nothing to inject;
+#   - opens the NetworkPolicy, which otherwise names a Milo namespace that does
+#     not exist here.
+#
+# Not for production. The CA is generated in-cluster and trusted by nothing
+# else, and the NetworkPolicy patch gives up the second gate.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../queryapi
+  - issuer.yaml
+
+components:
+  - ../queryapi-api-registration
+
+patches:
+  # The CSI driver asks this issuer for the serving certificate. Kind changes
+  # too: the e2e CA is a namespaced Issuer, and the driver only accepts a
+  # namespaced issuer that lives alongside the pod.
+  - target:
+      kind: Deployment
+      name: queryapi
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: queryapi
+      spec:
+        template:
+          spec:
+            volumes:
+              - name: serving-cert
+                csi:
+                  volumeAttributes:
+                    csi.cert-manager.io/issuer-name: queryapi-e2e-ca-issuer
+                    csi.cert-manager.io/issuer-kind: Issuer
+
+  # cainjector fills spec.caBundle from this Secret, so the aggregator verifies
+  # the backend rather than skipping the check. insecureSkipTLSVerify stays
+  # false even here.
+  - target:
+      group: apiregistration.k8s.io
+      kind: APIService
+      name: v1alpha1.o11y.miloapis.com
+    patch: |-
+      apiVersion: apiregistration.k8s.io/v1
+      kind: APIService
+      metadata:
+        name: v1alpha1.o11y.miloapis.com
+        annotations:
+          cert-manager.io/inject-ca-from-secret: o11y-system/queryapi-e2e-ca
+
+  # The base policy admits only the namespace running milo-apiserver, which on
+  # a test cluster is the control plane's host network and not a namespace at
+  # all -- left as-is, nothing could reach the listener. Authentication is
+  # unaffected: a caller still needs the front proxy's client certificate.
+  - target:
+      group: networking.k8s.io
+      kind: NetworkPolicy
+      name: queryapi
+    patch: |-
+      - op: replace
+        path: /spec/ingress/0/from
+        value: []

@@ -12,6 +12,7 @@ Dockerfile.cross
 # uses -o bin/<name>, already covered above, but ad-hoc verification runs
 # don't) -- ignore the known ones rather than the whole directory.
 /clickhouse-migrate/clickhouse-migrate
+/nkey-generator/nkey-generator
 
 # Test binary, built with `go test -c`
 *.test

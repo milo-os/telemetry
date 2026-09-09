@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive,staticcheck
 )
@@ -104,16 +105,37 @@ func IsPrometheusCRDsInstalled() bool {
 	return false
 }
 
-// UninstallCertManager uninstalls the cert manager
+// certManagerLeaderLeases are cert-manager's leader-election leases in kube-system,
+// which its manifest does not remove on uninstall. A stale lease can block the
+// cainjector from acquiring leadership and injecting the CA bundle, leaving the
+// webhook untrusted by the API server.
+var certManagerLeaderLeases = []string{
+	"cert-manager-cainjector-leader-election",
+	"cert-manager-controller",
+	"cert-manager-webhook",
+}
+
+// UninstallCertManager uninstalls cert-manager, including the leader-election leases
+// in kube-system that the manifest deletion leaves behind.
 func UninstallCertManager() {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
 	cmd := exec.Command("kubectl", "delete", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		warnError(err)
 	}
+
+	for _, lease := range certManagerLeaderLeases {
+		cmd = exec.Command("kubectl", "delete", "lease", lease, "-n", "kube-system", "--ignore-not-found")
+		if _, err := Run(cmd); err != nil {
+			warnError(err)
+		}
+	}
 }
 
-// InstallCertManager installs the cert manager bundle.
+// InstallCertManager installs cert-manager and waits until its webhook is trusted by
+// the API server. Deployment availability alone is not enough: the cainjector must
+// first inject the CA bundle into the webhook configuration, otherwise the API server
+// rejects the webhook with "unknown authority" and fails the resource apply.
 func InstallCertManager() error {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
 	cmd := exec.Command("kubectl", "apply", "-f", url)
@@ -127,9 +149,31 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
 
-	_, err := Run(cmd)
-	return err
+	// Wait until the CA bundle is injected into the webhook configuration so the API
+	// server trusts the webhook, not just until the deployment is running.
+	caBundleReady := func() bool {
+		out, err := exec.Command("kubectl", "get", "validatingwebhookconfiguration", "cert-manager-webhook",
+			"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}").CombinedOutput()
+		if err != nil {
+			return false
+		}
+		return len(bytes.TrimSpace(out)) > 0
+	}
+
+	deadline := time.Now().Add(5 * time.Minute)
+	for !caBundleReady() {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("cert-manager webhook CA bundle was never injected into " +
+				"validatingwebhookconfiguration/cert-manager-webhook: the cainjector may be " +
+				"blocked by a stale leader-election lease")
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return nil
 }
 
 // IsCertManagerCRDsInstalled checks if any Cert Manager CRDs are installed

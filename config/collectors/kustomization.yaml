@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: o11y-system
+
+configurations:
+  - kustomizeconfig.yaml
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: o11y-system
+    includeTemplates: true
+
+resources:
+  - nats.yaml
+  - gateway-collector.yaml
+  - node-agent-collector.yaml
+  - sink-collector.yaml

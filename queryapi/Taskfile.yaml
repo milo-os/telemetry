@@ -1,0 +1,43 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build the queryapi binary
+    cmds:
+      - CGO_ENABLED=0 go build -o bin/queryapi ./cmd
+
+  run:
+    desc: Run queryapi from your host
+    cmds:
+      - go run ./cmd
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  test-integration:
+    desc: Run the ClickHouse integration tests against a throwaway container (needs docker)
+    vars:
+      IMAGE: clickhouse/clickhouse-server:25.3
+      CONTAINER: queryapi-ch-test
+      PASSWORD: test
+      PORT: 19001
+    cmds:
+      - docker rm -f {{.CONTAINER}} >/dev/null 2>&1 || true
+      - docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -p {{.PORT}}:9000 {{.IMAGE}}
+      - defer: docker rm -f {{.CONTAINER}} >/dev/null
+      - |
+        for i in $(seq 1 60); do
+          docker exec {{.CONTAINER}} clickhouse-client --password {{.PASSWORD}} -q 'SELECT 1' >/dev/null 2>&1 && break
+          sleep 1
+        done
+      - CLICKHOUSE_TEST_ADDR=127.0.0.1:{{.PORT}} CLICKHOUSE_TEST_PASSWORD={{.PASSWORD}} go test -count=1 -run TestStoreAgainstClickHouse ./internal/storage/clickhouse/
+
+  lint:
+    desc: Run golangci-lint (assumes it's installed on PATH -- see CI's pinned version)
+    cmds:
+      # --no-config: this module intentionally has no .golangci.yml (relies on
+      # golangci-lint's defaults, matching CI's clean-checkout behavior) -- pin
+      # that explicitly so a stray config file above the repo root can't leak in.
+      - golangci-lint run --no-config

@@ -1,0 +1,161 @@
+# Edge-local core NATS (no JetStream -- lack of local durable storage).
+# Collectors publish here; a leaf connection (NATS_HUB_LEAFNODE_URL)
+# forwards to the storage-backed hub.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+data:
+  nats.conf: |
+    server_name: edge-nats
+    listen: 0.0.0.0:4222
+    tls {
+      cert_file: "/etc/nats-server-tls/tls.crt"
+      key_file: "/etc/nats-server-tls/tls.key"
+      ca_file: "/etc/nats-server-tls/ca.crt"
+      verify: true
+    }
+    http_port: 8222
+    leafnodes {
+      remotes: [
+        {
+          url: $NATS_HUB_LEAFNODE_URL
+          # Hub leafnode serves LetsEncrypt TLS and authenticates this leaf
+          # by NKey (no client cert requested); trust its cert via the
+          # public LE chain.
+          nkey: $EDGE_NKEY_SEED
+          tls: {
+            handshake_first: true
+          }
+        }
+      ]
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      containers:
+        - name: metrics
+          image: natsio/prometheus-nats-exporter:0.20.2
+          args:
+            - -varz
+            - -connz
+            - -subz
+            # The leaf to the hub is this broker's only egress; leafz is what
+            # reports whether it is up and carrying messages.
+            - -leafz
+            # Match the hub chart's prefix so one query spans edge and hub.
+            # Unset, these arrive as gnatsd_* and no dashboard finds them.
+            - -prefix=nats
+            - -addr=0.0.0.0
+            - -port=7777
+            - http://localhost:8222
+          ports:
+            - name: metrics
+              containerPort: 7777
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi
+        - name: nats
+          image: nats:2.14.6-alpine
+          command: ["nats-server", "-c", "/etc/nats/nats.conf"]
+          env:
+            - name: NATS_HUB_LEAFNODE_URL
+              value: "${hub_leafnode_url}"
+            - name: EDGE_NKEY_SEED
+              valueFrom:
+                secretKeyRef:
+                  # Per-PoP NKey seed from GCP Secret Manager (ExternalSecret
+                  # nats-leaf-nkey-<cluster>).
+                  name: edge-leaf-nkey
+                  key: edge.seed
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitoring
+              containerPort: 8222
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+            - name: nats-server-tls
+              mountPath: /etc/nats-server-tls
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: nats-config
+        - name: nats-server-tls
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-name: PLACEHOLDER-issuer
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/common-name: edge-nats-server
+              csi.cert-manager.io/dns-names: nats.o11y-system.svc.cluster.local,nats.o11y-system.svc,nats
+              csi.cert-manager.io/duration: "2160h"
+              csi.cert-manager.io/renew-before: "360h"
+              csi.cert-manager.io/key-usages: "server auth"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+spec:
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+    - name: monitoring
+      port: 8222
+      targetPort: 8222
+    - name: metrics
+      port: 7777
+      targetPort: 7777
+---
+# vmagent selects every PodMonitor in the cluster (selectAllByDefault) and
+# stamps the `cluster` label on remote write, so this is all it takes to land
+# edge broker metrics next to the hub's in VictoriaMetrics.
+#
+# Named edge-* because collectors/ is applied to the hub too, where `nats`
+# already belongs to the NATS chart's own PodMonitor.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: edge-nats
+spec:
+  selector:
+    matchLabels:
+      app: nats
+  podMetricsEndpoints:
+    - port: metrics

@@ -35,6 +35,45 @@ func TestConfigFromEnv_Defaults(t *testing.T) {
 	require.Equal(t, "9440", cfg.port)
 	require.Equal(t, "/migrations", cfg.migrationsDir)
 	require.Equal(t, "/etc/clickhouse-client/certs/tls.crt", cfg.tlsCertFile)
+	require.Equal(t, "queryapi", cfg.queryapiUser)
+}
+
+func TestConfigFromEnv_RejectsMaliciousQueryapiUser(t *testing.T) {
+	t.Setenv("CLICKHOUSE_HOST", "clickhouse.example")
+	t.Setenv("CLICKHOUSE_USER", "clickhouse-migrations-client")
+	t.Setenv("CLICKHOUSE_DATABASE", "o11y")
+
+	for name, value := range map[string]string{
+		"backtick":  "queryapi`; DROP TABLE x --",
+		"semicolon": "queryapi; DROP TABLE x",
+		"space":     "query api",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("CLICKHOUSE_QUERYAPI_USER", value)
+			_, err := configFromEnv()
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestConfigFromEnv_AcceptsRealQueryapiUsers(t *testing.T) {
+	t.Setenv("CLICKHOUSE_HOST", "clickhouse.example")
+	t.Setenv("CLICKHOUSE_USER", "clickhouse-migrations-client")
+	t.Setenv("CLICKHOUSE_DATABASE", "o11y")
+
+	for _, value := range []string{"queryapi", "queryapi-clickhouse-client", "queryapi_user"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CLICKHOUSE_QUERYAPI_USER", value)
+			cfg, err := configFromEnv()
+			require.NoError(t, err)
+			require.Equal(t, value, cfg.queryapiUser)
+		})
+	}
+}
+
+func TestQuoteIdentifier(t *testing.T) {
+	require.Equal(t, "`o11y`", quoteIdentifier("o11y"))
+	require.Equal(t, "`o11y``; DROP TABLE x`", quoteIdentifier("o11y`; DROP TABLE x"))
 }
 
 func TestLoadClientTLSConfig(t *testing.T) {

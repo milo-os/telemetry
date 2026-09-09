@@ -1,0 +1,43 @@
+# One-off manual cleanup for milo-os/telemetry#153. Deletes a precomputed
+# list of orphaned ghcr.io/milo-os/o11y/kustomize package versions -- see
+# that issue for how the list was derived (protects real releases, every
+# digest currently live on any reachable cluster, and the newest build tied
+# to each open PR). Not a general solution; that's tracked in
+# datum-cloud/infra#4675. Safe to delete this workflow and its data file
+# once it's been run.
+name: Prune kustomize package versions (one-off)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v4
+
+      - name: Delete orphaned versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          total=$(wc -l < .github/prune-kustomize-version-ids.txt)
+          count=0
+          failed=0
+          while IFS= read -r id; do
+            count=$((count + 1))
+            if gh api -X DELETE "/orgs/milo-os/packages/container/o11y%2Fkustomize/versions/${id}" >/dev/null 2>&1; then
+              echo "[$count/$total] deleted $id"
+            else
+              echo "[$count/$total] FAILED $id"
+              failed=$((failed + 1))
+            fi
+          done < .github/prune-kustomize-version-ids.txt
+          echo "done: $((total - failed))/$total deleted, $failed failed"
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi

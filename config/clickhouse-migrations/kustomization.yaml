@@ -7,5 +7,5 @@ resources:
 configMapGenerator:
   - name: clickhouse-migrations
     files:
-      - migrations/000001_create_logs_table.up.sql
-      - migrations/000001_create_logs_table.down.sql
+      - migrations/000001_init.up.sql
+      - migrations/000001_init.down.sql

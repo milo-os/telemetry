@@ -84,7 +84,7 @@ tasks:
     desc: Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects
     deps: [install-tools]
     cmds:
-      - '{{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases'
+      - '{{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=../config/operator/crd/bases output:rbac:artifacts:config=../config/operator/rbac output:webhook:artifacts:config=../config/operator/webhook'
 
   generate:
     desc: Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations
@@ -111,6 +111,11 @@ tasks:
         echo "Setting up envtest binaries for Kubernetes version {{.ENVTEST_K8S_VERSION}}..."
         {{.TOOL_DIR}}/setup-envtest use {{.ENVTEST_K8S_VERSION}} --bin-dir {{.TOOL_DIR}} -p path
 
+  tidy:
+    desc: Run go mod tidy (mirrors CI)
+    cmds:
+      - go mod tidy
+
   test:
     desc: Run tests
     cmds:
@@ -134,6 +139,13 @@ tasks:
         set -e
         command -v kind >/dev/null 2>&1 || { echo "Kind is not installed. Please install Kind manually."; exit 1; }
         kind get clusters | grep -q 'kind' || { echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; exit 1; }
+        # The e2e suite installs cert-manager/prometheus via kubectl, which goes
+        # to the current context. Pin it to the Kind cluster so the tests never
+        # accidentally hit a real cluster (e.g. a GKE context with expired
+        # gcloud creds), then restore the caller's context afterwards.
+        PREV_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
+        kubectl config use-context kind-kind >/dev/null
+        trap 'kubectl config use-context "$PREV_CONTEXT" >/dev/null 2>&1 || true' EXIT
         go test ./test/e2e/ -v -ginkgo.v
 
   lint:
@@ -204,22 +216,27 @@ tasks:
       - |
         set -e
         mkdir -p dist
-        (cd config/manager && {{.TOOL_DIR}}/kustomize edit set image ghcr.io/milo-os/telemetry={{.IMAGE_NAME}}:{{.IMAGE_TAG}})
-        {{.TOOL_DIR}}/kustomize build config/default > dist/install.yaml
+        # Edit the image on a scratch copy so the tracked kustomization is never
+        # mutated when generating the installer manifest.
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "$TMP_DIR"' EXIT
+        cp -r ../config/operator "$TMP_DIR/"
+        (cd "$TMP_DIR/operator/manager" && {{.TOOL_DIR}}/kustomize edit set image ghcr.io/milo-os/telemetry={{.IMAGE_NAME}}:{{.IMAGE_TAG}})
+        {{.TOOL_DIR}}/kustomize build "$TMP_DIR/operator/default" > dist/install.yaml
 
   install:
     desc: Install CRDs into the K8s cluster specified in ~/.kube/config
     deps: [install-tools]
     cmds:
       - task: manifests
-      - "{{.TOOL_DIR}}/kustomize build config/dev | {{.KUBECTL}} apply -f -"
+      - "{{.TOOL_DIR}}/kustomize build ../config/operator/dev | {{.KUBECTL}} apply -f -"
 
   uninstall:
     desc: 'Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Set IGNORE_NOT_FOUND=true to ignore resource not found errors during deletion'
     deps: [install-tools]
     cmds:
       - task: manifests
-      - "{{.TOOL_DIR}}/kustomize build config/crd | {{.KUBECTL}} delete --ignore-not-found={{.IGNORE_NOT_FOUND}} -f -"
+      - "{{.TOOL_DIR}}/kustomize build ../config/operator/crd | {{.KUBECTL}} delete --ignore-not-found={{.IGNORE_NOT_FOUND}} -f -"
 
   deploy:
     desc: Deploy controller to the K8s cluster specified in ~/.kube/config
@@ -228,14 +245,19 @@ tasks:
       - task: manifests
       - |
         set -e
-        (cd config/manager && {{.TOOL_DIR}}/kustomize edit set image ghcr.io/milo-os/telemetry={{.IMAGE_NAME}}:{{.IMAGE_TAG}})
-        {{.TOOL_DIR}}/kustomize build config/default | {{.KUBECTL}} apply -f -
+        # Edit the image on a scratch copy so the tracked kustomization is never
+        # mutated by deploying.
+        TMP_DIR=$(mktemp -d)
+        trap 'rm -rf "$TMP_DIR"' EXIT
+        cp -r ../config/operator "$TMP_DIR/"
+        (cd "$TMP_DIR/operator/manager" && {{.TOOL_DIR}}/kustomize edit set image ghcr.io/milo-os/telemetry={{.IMAGE_NAME}}:{{.IMAGE_TAG}})
+        {{.TOOL_DIR}}/kustomize build "$TMP_DIR/operator/default" | {{.KUBECTL}} apply -f -
 
   undeploy:
     desc: 'Undeploy controller from the K8s cluster specified in ~/.kube/config. Set IGNORE_NOT_FOUND=true to ignore resource not found errors during deletion'
     deps: [install-tools]
     cmds:
-      - "{{.TOOL_DIR}}/kustomize build config/default | {{.KUBECTL}} delete --ignore-not-found={{.IGNORE_NOT_FOUND}} -f -"
+      - "{{.TOOL_DIR}}/kustomize build ../config/operator/default | {{.KUBECTL}} delete --ignore-not-found={{.IGNORE_NOT_FOUND}} -f -"
 
   api-docs:
     desc: Generate CRD API reference docs
@@ -244,8 +266,8 @@ tasks:
       - |
         set -e
         TMP_MANIFEST_DIR=$(mktemp -d)
-        cp -r config/crd/* "$TMP_MANIFEST_DIR"
-        {{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+        cp -r ../config/operator/crd/* "$TMP_MANIFEST_DIR"
+        {{.TOOL_DIR}}/controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=../config/operator/crd/bases
         TMP_DIR=$(mktemp -d)
         {{.TOOL_DIR}}/kustomize build "$TMP_MANIFEST_DIR" -o "$TMP_DIR"
         mkdir -p docs/api

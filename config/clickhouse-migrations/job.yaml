@@ -30,6 +30,12 @@ spec:
               value: "clickhouse-migrations-client"
             - name: CLICKHOUSE_DATABASE
               value: "o11y"
+            # The ClickHouse username the 000001 migration grants SELECT and
+            # row-policy access to. Defaults to the literal "queryapi" this
+            # migration was written against; override it if this deployment's
+            # queryapi ClickHouse identity is named differently.
+            - name: CLICKHOUSE_QUERYAPI_USER
+              value: "queryapi"
             - name: MIGRATIONS_DIR
               value: "/migrations"
           volumeMounts:

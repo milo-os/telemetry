@@ -1,0 +1,770 @@
+openapi: 3.0.3
+info:
+  title: Telemetry Query Layer API
+  description: >-
+    Tenant-scoped query API over ClickHouse for logs and metrics, serving
+    `datumctl` and the customer cloud portal. Design rationale lives in
+    datum-cloud/enhancements, enhancements/telemetry/query-layer/README.md
+    (see the "HTTP API contract" section).
+
+
+    The log endpoints below deliberately mimic Loki's HTTP API
+    (`/loki/api/v1/query`, `/query_range`, `/label`, `/label/{name}/values`,
+    `/series`) rather than a bespoke shape, so existing Loki-aware tooling —
+    Grafana's Loki datasource in particular — can query this service with no
+    custom integration. LogQL itself was never the mismatch (it's Loki's own
+    query language, and the subset described below is what this service
+    accepts); only the endpoint paths and response envelope changed to match.
+
+
+    The metric endpoints mimic the (vanilla) Prometheus HTTP API — plain
+    `/api/v1/query`, not Mimir's `/prometheus/api/v1/query` prefix. "Prometheus"
+    has become the generic term for this query API shape (Grafana's
+    "Prometheus" datasource type is used against Prometheus, Mimir, Cortex,
+    Thanos, and others interchangeably); "Mimir" names one specific product,
+    which this service is not. Matching Prometheus's own paths keeps us
+    generically compatible without implying a specific backend identity.
+
+
+    Two things this does **not** adopt from real Loki or real
+    Prometheus/Mimir: (1) tenancy is never read from a client-supplied header
+    (real Loki uses `X-Scope-OrgID`; real Mimir uses the same header for the
+    same purpose — both put tenancy in the caller's control, which the
+    query-layer design doc explicitly rejects). `project_id` is always
+    resolved server-side from the request context `milo-api` populates, for
+    every endpoint below including label/series discovery — there is no code
+    path where a client can see another project's labels, series, samples, or
+    log lines. (2) `/loki/api/v1/tail` (Loki's live-tail endpoint, a WebSocket
+    upgrade) is intentionally not included in this revision — tracked as a
+    follow-up once the tail transport (chunked HTTP vs. WebSocket) is decided.
+
+
+    Metric endpoints are specced here so `datumctl`/portal and Prometheus-API
+    client work can start, but return 501 until implemented — logs are the
+    Phase 1 priority; see the roadmap in
+    enhancements/telemetry/README.md.
+  version: "0.3.0"
+servers:
+  - url: "/projects/{projectId}/control-plane/apis/{o11yGroup}/v1alpha1"
+    description: >-
+      Per-project APIService path. projectId and o11yGroup are resolved by the
+      kube-aggregator proxy chain, not supplied by API clients directly; they
+      appear here only because OpenAPI requires a concrete server URL template.
+    variables:
+      projectId:
+        default: current
+      o11yGroup:
+        default: o11y.miloapis.com
+
+security:
+  - bearerAuth: []
+
+paths:
+  /logs/loki/api/v1/query:
+    get:
+      operationId: lokiQuery
+      summary: Instant log query (mimics Loki's /loki/api/v1/query)
+      tags: [logs]
+      parameters:
+        - $ref: "#/components/parameters/LogQLQuery"
+        - $ref: "#/components/parameters/Limit"
+        - name: time
+          in: query
+          description: Evaluation instant. Defaults to now.
+          schema:
+            type: string
+            format: date-time
+        - $ref: "#/components/parameters/Direction"
+      responses:
+        "200":
+          description: Matching log lines, as Loki-shaped streams.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LokiQueryResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /logs/loki/api/v1/query_range:
+    get:
+      operationId: lokiQueryRange
+      summary: Range log query (mimics Loki's /loki/api/v1/query_range)
+      tags: [logs]
+      parameters:
+        - $ref: "#/components/parameters/LogQLQuery"
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Direction"
+      responses:
+        "200":
+          description: Matching log lines over [start,end], as Loki-shaped streams.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LokiQueryResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /logs/loki/api/v1/labels:
+    get:
+      operationId: lokiLabelNames
+      summary: List label names in use (mimics Loki's /loki/api/v1/labels)
+      description: >-
+        Returns `service_name` and `severity` (the fixed schema columns)
+        unioned with the distinct keys currently present in `LogAttributes`/
+        `ResourceAttributes`, scoped to the caller's project_id — a project
+        never sees a label name that only exists in another project's data.
+      tags: [discovery]
+      parameters:
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+      responses:
+        "200":
+          description: Label names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StringListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /logs/loki/api/v1/label/{name}/values:
+    get:
+      operationId: lokiLabelValues
+      summary: >-
+        List distinct values for one label (mimics Loki's
+        /loki/api/v1/label/{name}/values)
+      description: >-
+        `name=service_name` and `name=severity` read the corresponding fixed
+        column; any other name reads `LogAttributes[name]`/
+        `ResourceAttributes[name]`. Scoped to the caller's project_id, same as
+        every other endpoint here.
+      tags: [discovery]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          example: severity
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+        - name: query
+          in: query
+          description: >-
+            Optional LogQL label-matcher subset (no line filters) to further
+            scope which streams' values are considered, e.g.
+            `{service_name="foo"}`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Distinct values for the named label.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StringListResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /logs/loki/api/v1/series:
+    get:
+      operationId: lokiSeries
+      summary: >-
+        List distinct label-sets / streams matching selectors (mimics Loki's
+        /loki/api/v1/series)
+      description: >-
+        Returned label-sets are bounded to the fixed schema columns
+        (`service_name`, `severity`) plus a small, explicitly allowlisted set
+        of common attribute keys — **not** every key present in
+        `LogAttributes`/`ResourceAttributes`. Including every dynamic
+        attribute key in the combination would make the distinct-combination
+        count unbounded (a cross product over arbitrary per-record JSON
+        keys), which doesn't scale as a discovery query. The allowlist itself
+        is an implementation detail to be defined when this endpoint is
+        built (tracked in the client-wiring issue), not part of this spec.
+      tags: [discovery]
+      parameters:
+        - name: match[]
+          in: query
+          required: true
+          description: >-
+            One or more LogQL label-matcher subset selectors (no line
+            filters), e.g. `{service_name="foo"}`. At least one is required,
+            matching Loki's own /series contract.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+      responses:
+        "200":
+          description: Distinct label-sets matching the given selectors.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeriesResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /metrics/api/v1/query:
+    post:
+      operationId: promQuery
+      summary: >-
+        Instant metric query, form-encoded (mimics Prometheus's
+        /api/v1/query; POST-only, matching Grafana's Prometheus datasource
+        default request mode)
+      tags: [metrics]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/PromQueryForm"
+      responses:
+        "200":
+          description: One sample per matching series, evaluated at `time`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromInstantQueryResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /metrics/api/v1/query_range:
+    post:
+      operationId: promQueryRange
+      summary: >-
+        Range metric query, form-encoded (mimics Prometheus's
+        /api/v1/query_range; POST-only, matching Grafana's Prometheus
+        datasource default request mode)
+      tags: [metrics]
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: "#/components/schemas/PromQueryRangeForm"
+      responses:
+        "200":
+          description: A series of samples per matching series across the range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PromRangeQueryResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /metrics/api/v1/series:
+    get:
+      operationId: promSeries
+      summary: >-
+        List distinct series matching selectors (mimics Prometheus's
+        /api/v1/series)
+      description: >-
+        Same cardinality-bounding concern as `/logs/loki/api/v1/series` applies
+        here: returned series are bounded to a known/allowlisted set of
+        label dimensions, not every dynamic dimension a metric might carry.
+      tags: [discovery]
+      parameters:
+        - name: match[]
+          in: query
+          required: true
+          description: >-
+            One or more PromQL-style selectors, e.g. `cpu_usage{service="foo"}`.
+            At least one is required, matching Prometheus's own /series
+            contract.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+      responses:
+        "200":
+          description: Distinct series (label-sets) matching the given selectors.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SeriesResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /metrics/api/v1/labels:
+    get:
+      operationId: promLabelNames
+      summary: >-
+        List label names in use (mimics Prometheus's /api/v1/labels — note
+        the plural, unlike Loki's singular /label)
+      description: >-
+        Scoped to the caller's project_id, same as every other endpoint here.
+      tags: [discovery]
+      parameters:
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+        - name: match[]
+          in: query
+          description: Optional selectors to further scope which series' labels are considered.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: Label names.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StringListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+  /metrics/api/v1/label/{name}/values:
+    get:
+      operationId: promLabelValues
+      summary: >-
+        List distinct values for one label (mimics Prometheus's
+        /api/v1/label/{name}/values)
+      description: >-
+        Scoped to the caller's project_id, same as every other endpoint here.
+      tags: [discovery]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          example: service
+        - $ref: "#/components/parameters/Start"
+        - $ref: "#/components/parameters/End"
+        - name: match[]
+          in: query
+          description: Optional selectors to further scope which series' values are considered.
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: true
+      responses:
+        "200":
+          description: Distinct values for the named label.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StringListResponse"
+        "400":
+          $ref: "#/components/responses/BadQuery"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        default:
+          $ref: "#/components/responses/UnexpectedError"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Forwarded through milo-api; project_id is resolved server-side from
+        this token and is never a client-supplied parameter.
+
+  parameters:
+    LogQLQuery:
+      name: query
+      in: query
+      required: true
+      description: >-
+        LogQL subset: label matchers (`{service_name="foo", severity="ERROR"}`)
+        and line filters (`|= "text"`, `!= "text"`, `|~ "regex"`, `!~ "regex"`).
+        Metric-style aggregations (count_over_time, rate), parser expressions
+        (| json, | logfmt), and line_format/label_format are rejected with 400.
+      schema:
+        type: string
+      example: '{service_name="compute-workload", severity="ERROR"} |= "timeout"'
+
+    Start:
+      name: start
+      in: query
+      description: >-
+        Relative ("1h", "30m") or absolute timestamp lower bound. Filters
+        Timestamp. Defaults to 1h before now.
+      schema:
+        type: string
+
+    End:
+      name: end
+      in: query
+      description: Relative or absolute timestamp upper bound. Defaults to now.
+      schema:
+        type: string
+
+    Limit:
+      name: limit
+      in: query
+      description: >-
+        Maximum log lines returned. Zero, negative, and unparseable values are
+        coerced to the default rather than rejected.
+      schema:
+        type: integer
+        default: 100
+        maximum: 5000
+
+    Direction:
+      name: direction
+      in: query
+      description: >-
+        Sort order. `backward` (most recent first) is the default; `forward`
+        returns oldest first.
+      schema:
+        type: string
+        enum: [backward, forward]
+        default: backward
+
+  responses:
+    BadQuery:
+      description: >-
+        The query parameter failed to parse, or used a construct outside the
+        supported LogQL/PromQL subset.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unauthorized:
+      description: >-
+        The caller could not be identified: no verified front-proxy identity
+        and no usable bearer token. Written by the apiserver runtime's own
+        authentication filter, so the body is a Kubernetes Status rather than
+        the Loki error envelope the handlers use.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusResponse"
+    Forbidden:
+      description: >-
+        The caller was identified but is not authorized to read this project's
+        telemetry, is acting outside a project, or asked for a path this
+        service does not serve. Written by the apiserver runtime's own
+        authorization filter, so the body is a Kubernetes Status. A review
+        that could not be completed at all is a 500 rather than a 403 -- an
+        unreachable authorizer is an outage, never an allowance -- and is
+        never a 200.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/StatusResponse"
+    UnexpectedError:
+      description: >-
+        Any error status not explicitly listed above, including 501 Not
+        Implemented — every handler in the current scaffold is a stub and
+        returns this until the ClickHouse/JetStream-backed implementation
+        lands.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: >-
+        Shared by both the Loki-mimicking and Prometheus-mimicking endpoints
+        — Loki's error envelope is itself modeled on Prometheus's.
+      required: [status, error]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        errorType:
+          type: string
+          example: bad_data
+        error:
+          type: string
+
+    StatusResponse:
+      type: object
+      description: >-
+        A Kubernetes metav1.Status, as written by the apiserver runtime's
+        authentication and authorization filters. queryapi's own handlers use
+        ErrorResponse; these two statuses are decided before a handler runs.
+      required: [kind, apiVersion, status, code]
+      properties:
+        kind:
+          type: string
+          enum: [Status]
+        apiVersion:
+          type: string
+          enum: ["v1"]
+        status:
+          type: string
+          enum: [Failure]
+        message:
+          type: string
+        reason:
+          type: string
+        code:
+          type: integer
+
+    StringListResponse:
+      type: object
+      description: >-
+        Shared by the label-name and label-value discovery endpoints, both
+        Loki- and Prometheus-mimicking — same shape in both real APIs.
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          items:
+            type: string
+
+    SeriesResponse:
+      type: object
+      description: >-
+        Shared by `/logs/loki/api/v1/series` and `/metrics/api/v1/series` — same shape in
+        both real APIs: a list of label-sets, no sample values.
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: array
+          items:
+            type: object
+            additionalProperties:
+              type: string
+
+    LokiStream:
+      type: object
+      required: [stream, values]
+      properties:
+        stream:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            The label set for this stream: `service_name`, `severity`, and
+            any dynamic attribute keys the query touched.
+        values:
+          type: array
+          description: >-
+            [nanosecondTimestamp, logLine] pairs, both strings, matching
+            Loki's own /query and /query_range value encoding.
+          items:
+            type: array
+            items:
+              type: string
+            minItems: 2
+            maxItems: 2
+
+    LokiQueryResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: object
+          required: [resultType, result]
+          properties:
+            resultType:
+              type: string
+              enum: [streams, vector]
+              description: >-
+                "streams" for the LogQL subset this service accepts. Loki's
+                "vector"/"matrix" result types apply to metric-style log
+                queries (count_over_time, rate, ...), which are rejected at
+                parse time — see the LogQLQuery parameter description. The one
+                exception is Grafana's datasource health probe, the literal
+                query `vector(1)+vector(1)`, answered with a single-sample
+                "vector" result (value "2") so the datasource reports healthy.
+                Grafana rejects an empty result here.
+            result:
+              type: array
+              items:
+                $ref: "#/components/schemas/LokiStream"
+
+    PromQueryForm:
+      type: object
+      required: [query]
+      properties:
+        query:
+          type: string
+          description: >-
+            PromQL-style label-matched series selector, e.g.
+            `cpu_usage{service="foo"}`. Aggregation functions (sum, avg,
+            rate) are not yet supported and are rejected with 400.
+          example: 'cpu_usage{service="compute-workload"}'
+        time:
+          type: string
+        timeout:
+          type: string
+
+    PromQueryRangeForm:
+      type: object
+      required: [query, start, end, step]
+      properties:
+        query:
+          type: string
+          description: >-
+            PromQL-style label-matched series selector, e.g.
+            `cpu_usage{service="foo"}`. Aggregation functions (sum, avg,
+            rate) are not yet supported and are rejected with 400.
+          example: 'cpu_usage{service="compute-workload"}'
+        start:
+          type: string
+        end:
+          type: string
+        step:
+          type: string
+        timeout:
+          type: string
+
+    PromVectorResult:
+      type: object
+      required: [metric, value]
+      properties:
+        metric:
+          type: object
+          additionalProperties:
+            type: string
+          description: Label set for this series, including __name__.
+        value:
+          type: array
+          description: >-
+            [unixTimestamp, stringValue] — a single sample, matching
+            Prometheus's "vector" result type for instant queries.
+          items:
+            type: string
+          minItems: 2
+          maxItems: 2
+
+    PromMatrixResult:
+      type: object
+      required: [metric, values]
+      properties:
+        metric:
+          type: object
+          additionalProperties:
+            type: string
+          description: Label set for this series, including __name__.
+        values:
+          type: array
+          description: >-
+            [unixTimestamp, stringValue] pairs, one per step, matching
+            Prometheus's "matrix" result type for range queries.
+          items:
+            type: array
+            items:
+              type: string
+            minItems: 2
+            maxItems: 2
+
+    PromInstantQueryResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: object
+          required: [resultType, result]
+          properties:
+            resultType:
+              type: string
+              enum: [vector]
+              description: >-
+                Always "vector" for the label-matched selector subset this
+                service accepts. Prometheus's "scalar"/"string" result types
+                don't apply to a plain series selector.
+            result:
+              type: array
+              items:
+                $ref: "#/components/schemas/PromVectorResult"
+
+    PromRangeQueryResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: object
+          required: [resultType, result]
+          properties:
+            resultType:
+              type: string
+              enum: [matrix]
+              description: >-
+                Always "matrix" for the label-matched selector subset this
+                service accepts.
+            result:
+              type: array
+              items:
+                $ref: "#/components/schemas/PromMatrixResult"

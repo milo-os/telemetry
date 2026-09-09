@@ -1,0 +1,39 @@
+# The aggregator dials queryapi over HTTPS and verifies the serving
+# certificate. There is no caBundle here and insecureSkipTLSVerify stays false,
+# which together mean one thing: **queryapi's serving certificate must be
+# signed by a CA the aggregator already trusts.**
+#
+# Issue it from the control plane's own CA -- the same one that signs the
+# aggregator's certificates -- and there is nothing to inject and nothing to
+# keep in sync. That is how the activity service is registered: no caBundle, no
+# annotation, no insecureSkipTLSVerify. Point config/queryapi/deployment.yaml's
+# `csi.cert-manager.io/issuer-name` at that CA's issuer.
+#
+# Injecting a bundle for a *different* CA is possible and is the wrong shape:
+# it makes the aggregator trust one more CA for one more backend, and adds a
+# copy of a certificate that has to be renewed in step with the issuer. If you
+# genuinely cannot use the control plane's CA:
+#
+#   - `cert-manager.io/inject-ca-from-secret: <ns>/<secret>` names the issuing
+#     CA's Secret and cainjector fills spec.caBundle from it. The Secret needs
+#     `cert-manager.io/allow-direct-injection: "true"`, and a selfSigned issuer
+#     has no CA Secret to name at all.
+#   - `spec.caBundle` can be patched directly with the base64 CA, for clusters
+#     with no cainjector.
+#   - `insecureSkipTLSVerify: true` gives up verification of the *backend*
+#     only; the requestheader client-certificate check on inbound requests is
+#     unaffected. For throwaway clusters, never for real telemetry.
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.o11y.miloapis.com
+spec:
+  service:
+    name: queryapi
+    namespace: o11y-system
+    port: 443
+  group: o11y.miloapis.com
+  version: v1alpha1
+  insecureSkipTLSVerify: false
+  groupPriorityMinimum: 1000
+  versionPriority: 15

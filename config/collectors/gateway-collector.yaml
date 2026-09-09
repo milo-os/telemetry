@@ -1,0 +1,186 @@
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: gateway-collector
+spec:
+  mode: deployment
+  replicas: 2
+  managementState: managed
+  # Custom otelcol distribution (unbatch+nats) -- publishes to NATS itself.
+  # Tag overlaid at publish by the kustomize-bundle workflow (publish.yaml).
+  image: ghcr.io/milo-os/o11y/otelcol:v0.0.0-dev
+  imagePullPolicy: Always
+  observability:
+    metrics:
+      enableMetrics: true
+  env:
+    - name: CLUSTER_NAME
+      value: "${cluster}"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+  volumes:
+    # mTLS client cert for the edge-local NATS client port (o11y-system
+    # ClusterIssuer via CSI; PLACEHOLDER-issuer patched by the edge app-sync).
+    - name: nats-client-certs
+      csi:
+        driver: csi.cert-manager.io
+        readOnly: true
+        volumeAttributes:
+          csi.cert-manager.io/issuer-name: PLACEHOLDER-issuer
+          csi.cert-manager.io/issuer-kind: ClusterIssuer
+          csi.cert-manager.io/common-name: gateway-collector-nats-client
+          csi.cert-manager.io/duration: "2160h"
+          csi.cert-manager.io/renew-before: "360h"
+          csi.cert-manager.io/key-usages: "client auth"
+          csi.cert-manager.io/fs-group: "65532"
+  volumeMounts:
+    - name: nats-client-certs
+      mountPath: /etc/otel/nats-client
+      readOnly: true
+  config:
+    receivers:
+      # Centralized OTLP push receiver -- for any sender that talks OTLP
+      # natively (e.g. Envoy, ukp-telemetry). See README.md.
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 75
+        spike_limit_percentage: 20
+
+      # The otlp receiver leaves observed_time_unix_nano at 0, so stamp it at
+      # receipt. The node agent's filelog receiver already sets it on read.
+      transform/observed_time:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - >-
+                set(log.observed_time_unix_nano, UnixNano(Now()))
+                where log.observed_time_unix_nano == 0
+
+      # Splits multi-tenant OTLP batches into one synthetic Resource per
+      # project before milo.project.id derivation, since that attribute is
+      # resource-scoped but a single sender (e.g. Envoy's merged Gateway
+      # fleet) can batch many tenants under one Resource. See README.md.
+      groupbyattrs:
+        keys:
+          - project_name
+
+      # Fallback path: resolves milo.project.id for senders that don't set
+      # project_name themselves, via the sender pod's namespace label.
+      k8sattributes:
+        auth_type: serviceAccount
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.node.name
+            - k8s.container.name
+            - k8s.deployment.name
+          labels:
+            # See the resource attribute contract in README.md.
+            - tag_name: k8s.namespace.project_name
+              key: resourcemanager.miloapis.com/project-name
+              from: namespace
+            - tag_name: k8s.namespace.upstream_cluster_name
+              key: meta.datumapis.com/upstream-cluster-name
+              from: namespace
+        pod_association:
+          - sources:
+              - from: connection
+
+      resource:
+        attributes:
+          - key: k8s.cluster.name
+            value: $${CLUSTER_NAME}
+            action: upsert
+          - key: service.namespace
+            from_attribute: k8s.namespace.name
+            action: insert
+          - key: service.name
+            from_attribute: k8s.container.name
+            action: insert
+
+      # Derives milo.project.id per the resource attribute contract --
+      # see README.md for the full four-tier precedence.
+      transform/milo_project_id:
+        error_mode: ignore
+        log_statements:
+          - context: resource
+            statements:
+              - >-
+                set(resource.attributes["milo.project.id"], resource.attributes["project_name"])
+                where resource.attributes["project_name"] != nil and
+                resource.attributes["project_name"] != "" and
+                resource.attributes["project_name"] != "-"
+              - >-
+                set(resource.attributes["milo.project.id"], resource.attributes["k8s.namespace.project_name"])
+                where resource.attributes["milo.project.id"] == nil and
+                resource.attributes["k8s.namespace.project_name"] != nil and
+                resource.attributes["k8s.namespace.project_name"] != ""
+              - >-
+                set(resource.attributes["milo.project.id"], resource.attributes["k8s.namespace.upstream_cluster_name"])
+                where resource.attributes["milo.project.id"] == nil and
+                IsMatch(resource.attributes["k8s.namespace.upstream_cluster_name"], "^cluster-")
+              - replace_pattern(resource.attributes["milo.project.id"], "^cluster-", "")
+              - >-
+                set(resource.attributes["milo.project.id"], "internal")
+                where resource.attributes["milo.project.id"] == nil
+              # PoP token is required: the hub grants this leaf's NKey only
+              # o11y.logs.<cluster>.*, and denied publishes are dropped silently.
+              - >-
+                set(resource.attributes["telemetry.subject"],
+                Concat(["o11y.logs.", resource.attributes["k8s.cluster.name"], ".", resource.attributes["milo.project.id"]], ""))
+
+      batch:
+        timeout: 10s
+        send_batch_size: 512
+
+      # Explodes the batch back down to one record per outgoing message
+      # right before export -- batch above amortizes the enrichment steps'
+      # per-call overhead across many records; this controls the final
+      # message granularity onto NATS. Not redundant with batch: different
+      # jobs, same pipeline.
+      unbatch: {}
+
+    exporters:
+      nats:
+        url: nats.o11y-system.svc.cluster.local:4222
+        subject_from_attribute: telemetry.subject
+        # mTLS to the edge NATS server (nats.conf tls{verify:true}).
+        tls:
+          ca_file: /etc/otel/nats-client/ca.crt
+          cert_file: /etc/otel/nats-client/tls.crt
+          key_file: /etc/otel/nats-client/tls.key
+        logs:
+          # Fallback only; must match the leaf's grant like the attribute does.
+          subject: o11y.logs.${cluster}.internal
+          encoding: otlp_proto
+
+      debug:
+        verbosity: basic
+        sampling_initial: 5
+        sampling_thereafter: 200
+
+    service:
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, transform/observed_time, groupbyattrs, k8sattributes, resource, transform/milo_project_id, batch, unbatch]
+          exporters: [nats, debug]

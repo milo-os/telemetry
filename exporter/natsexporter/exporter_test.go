@@ -96,6 +96,49 @@ func testConfig(t *testing.T, srv *natsserver.Server) *Config {
 	return cfg
 }
 
+// TestPublishToDomainConfiguredServerNeedsNoDomainClient confirms that an
+// acked JetStream publish with no domain configured on the client lands in a
+// stream on a server that *does* configure a JetStream domain. js.Publish only
+// writes to the data subject and awaits a PubAck; it makes no $JS.API call and
+// so does not need the domain to address the API. This is the property that
+// lets the edge exporter publish into the hub's domain with just `stream` set.
+func TestPublishToDomainConfiguredServerNeedsNoDomainClient(t *testing.T) {
+	opts := &natsserver.Options{
+		Host:            "127.0.0.1",
+		Port:            -1,
+		JetStream:       true,
+		JetStreamDomain: "hub",
+		StoreDir:        t.TempDir(),
+	}
+	srv, err := natsserver.NewServer(opts)
+	require.NoError(t, err)
+	go srv.Start()
+	if !srv.ReadyForConnections(5 * time.Second) {
+		t.Fatal("nats server did not become ready")
+	}
+	t.Cleanup(srv.Shutdown)
+
+	js := createTestStream(t, srv, "o11y", "o11y.>")
+
+	cfg := createDefaultConfig().(*Config)
+	cfg.URL = srv.ClientURL()
+	cfg.Stream = "o11y"
+	cfg.TLS.Insecure = true
+	cfg.Logs.Subject = "o11y.logs.test-cluster.test-project"
+
+	exp, err := newExporter(cfg, exportertest.NewNopSettings(exportertest.NopType))
+	require.NoError(t, err)
+	require.NoError(t, exp.start(t.Context(), componenttest.NewNopHost()))
+	t.Cleanup(func() { require.NoError(t, exp.shutdown(t.Context())) })
+
+	logs := plog.NewLogs()
+	logs.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
+	require.NoError(t, exp.pushLogs(t.Context(), logs))
+
+	payload := consumeOne(t, js, "o11y", "o11y.logs.test-cluster.test-project")
+	assert.NotEmpty(t, payload)
+}
+
 func TestExporter_PushLogs(t *testing.T) {
 	srv := startTestServer(t)
 	js := createTestStream(t, srv, "otlp", "otlp.>")

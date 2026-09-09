@@ -1,0 +1,190 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queryapi
+  labels:
+    app.kubernetes.io/name: queryapi
+    app.kubernetes.io/component: query
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: queryapi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: queryapi
+    spec:
+      # queryapi authenticates to Milo as itself, both to read the front
+      # proxy's client CA out of kube-system and to ask Milo whether a caller
+      # may read a project's telemetry, so it needs its token (see rbac.yaml).
+      serviceAccountName: queryapi
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: queryapi
+          image: ghcr.io/milo-os/o11y/queryapi:latest
+          # Every flag's value is an env var, never a literal. args is a list,
+          # and a strategic merge patch replaces a list wholesale -- a consumer
+          # overriding one flag would have to restate all of them, and would
+          # silently drop any flag added here later. env merges by name, so
+          # patching a single env entry changes exactly one value and leaves
+          # the rest of this list alone. Same reason activity's deployment is
+          # written this way; see queryapi/README.md for a worked patch.
+          args:
+            - --storage=$(STORAGE)
+            - --secure-port=$(SECURE_PORT)
+            - --tls-cert-file=$(TLS_CERT_FILE)
+            - --tls-private-key-file=$(TLS_PRIVATE_KEY_FILE)
+            - --authentication-kubeconfig=$(AUTHENTICATION_KUBECONFIG)
+            - --authorization-kubeconfig=$(AUTHORIZATION_KUBECONFIG)
+            - --requestheader-client-ca-file=$(REQUESTHEADER_CLIENT_CA_FILE)
+            - --requestheader-uid-headers=$(REQUESTHEADER_UID_HEADERS)
+            - --authorization-always-allow-paths=$(AUTHORIZATION_ALWAYS_ALLOW_PATHS)
+          env:
+            # Synthetic logs until the ClickHouse backend can query. Switch to
+            # "clickhouse" and supply CLICKHOUSE_* env (read by the process
+            # directly, not through a flag) plus a client certificate volume
+            # once it can.
+            - name: STORAGE
+              value: "fake"
+            # TLS is the whole point of the identity chain, not a hardening
+            # extra: only a TLS connection carries the front proxy's client
+            # certificate, and only that certificate makes the forwarded
+            # X-Remote-* headers worth believing.
+            #
+            # Changing this alone is not enough: the containerPort and the
+            # Service's targetPort name the same listener. Patch all three, or
+            # none.
+            - name: SECURE_PORT
+              value: "8443"
+            # Written into the pod by the cert-manager CSI driver -- see the
+            # serving-cert volume below. tls.crt/tls.key/ca.crt are the names
+            # the driver uses.
+            - name: TLS_CERT_FILE
+              value: "/var/run/queryapi/tls/tls.crt"
+            - name: TLS_PRIVATE_KEY_FILE
+              value: "/var/run/queryapi/tls/tls.key"
+            # Empty means in-cluster: TokenReview and SubjectAccessReview go
+            # to the API server queryapi runs next to, using the mounted
+            # service account token.
+            #
+            # That is right only when queryapi runs inside the control plane
+            # that authenticates callers and evaluates IAM. A queryapi deployed
+            # beside its storage instead -- in a cluster the aggregator merely
+            # proxies into -- must set both to a kubeconfig for that control
+            # plane. Nothing fails loudly if you do not: the local API server
+            # answers the reviews itself, knows none of the permissions in
+            # internal/authz/permissions.go, and denies every query. Send one
+            # SubjectAccessReview by hand before trusting an allow.
+            - name: AUTHENTICATION_KUBECONFIG
+              value: ""
+            - name: AUTHORIZATION_KUBECONFIG
+              value: ""
+            # Empty means the front proxy's CA is read from the
+            # extension-apiserver-authentication ConfigMap in kube-system -- in
+            # whichever cluster AUTHENTICATION_KUBECONFIG selects, which is the
+            # local one while that is empty. rbac.yaml grants that read.
+            #
+            # Naming a file here skips the ConfigMap lookup, and the RoleBinding
+            # with it. Prefer the file whenever the front proxy is not the local
+            # cluster's: this must be the CA that signs the aggregator's client
+            # certificate, and no other.
+            - name: REQUESTHEADER_CLIENT_CA_FILE
+              value: ""
+            # The header carrying the caller's UID. Not defaulted by the
+            # framework, and Milo's IAM authorizes on the UID rather than the
+            # username -- it resolves the caller to
+            # iam.miloapis.com/InternalUser:<uid> before checking anything. Drop
+            # this and every review is made for an empty subject, matches no
+            # grant, and denies: a 403 on every query with nothing in the
+            # message to say why. activity sets the same header for the same
+            # reason.
+            - name: REQUESTHEADER_UID_HEADERS
+              value: "X-Remote-Uid"
+            # The paths served without a SubjectAccessReview. The probes below
+            # and the metrics scraper present no credentials, and the framework
+            # default omits /metrics. Nothing listed here can open a query
+            # route: those are resource requests by the time they are
+            # authorized, and the path authorizer abstains on every one of
+            # those. queryapi refuses to start if this names its own API group.
+            - name: AUTHORIZATION_ALWAYS_ALLOW_PATHS
+              value: "/healthz,/readyz,/livez,/metrics"
+            # There is deliberately no flag, and so no env var, that lets a
+            # caller name its own project. Tenancy comes from the verified
+            # identity's iam.miloapis.com/parent-name extra -- which the
+            # delegating authorizer copies into the SubjectAccessReview for
+            # Milo to evaluate -- and from nowhere else.
+          ports:
+            - name: https
+              containerPort: 8443
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          volumeMounts:
+            - name: serving-cert
+              mountPath: /var/run/queryapi/tls
+              readOnly: true
+      volumes:
+        # Serving certificate from the cert-manager CSI driver, the same way
+        # the collectors get their NATS certificates: the driver requests one
+        # per pod at mount time and renews it in place, so no Certificate
+        # object and no long-lived Secret holding a private key exist for this
+        # workload at all.
+        #
+        # PLACEHOLDER-issuer must be patched by the consumer, and what it
+        # names matters: the aggregator verifies this certificate and the
+        # APIService carries no caBundle, so it has to be **the CA the
+        # aggregator already trusts** -- in practice the control plane's own.
+        # Any other CA leaves the aggregator unable to verify the backend, and
+        # then needs a bundle injected into the APIService to compensate.
+        # config/queryapi-e2e/ does exactly that for clusters with no control
+        # plane CA to borrow.
+        #
+        # This is a *serving* certificate, hence "server auth" and the dnsNames
+        # covering the addresses the aggregator dials. o11y-system is the
+        # namespace queryapi-api-registration/apiservice.yaml points the
+        # APIService at and the one rbac.yaml binds its subjects in; a consumer
+        # deploying elsewhere must patch all three together.
+        - name: serving-cert
+          csi:
+            driver: csi.cert-manager.io
+            readOnly: true
+            volumeAttributes:
+              csi.cert-manager.io/issuer-name: PLACEHOLDER-issuer
+              csi.cert-manager.io/issuer-kind: ClusterIssuer
+              csi.cert-manager.io/common-name: queryapi.o11y-system.svc
+              csi.cert-manager.io/dns-names: "queryapi.o11y-system.svc,queryapi.o11y-system.svc.cluster.local"
+              csi.cert-manager.io/duration: "2160h"
+              csi.cert-manager.io/renew-before: "360h"
+              csi.cert-manager.io/key-usages: "server auth"
+              # The image runs as 65532:65532 (distroless nonroot), so the
+              # driver has to hand the key to that group for the process to
+              # read it.
+              csi.cert-manager.io/fs-group: "65532"

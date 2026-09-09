@@ -1,0 +1,22 @@
+version: '3'
+
+tasks:
+  tidy:
+    desc: Run go mod tidy (mirrors CI)
+    cmds:
+      - go mod tidy
+
+  build:
+    desc: Build the nkey-generator binary
+    cmds:
+      - CGO_ENABLED=0 go build -o bin/nkey-generator .
+
+  test:
+    desc: Run Go tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run golangci-lint (assumes it's installed on PATH)
+    cmds:
+      - golangci-lint run --no-config

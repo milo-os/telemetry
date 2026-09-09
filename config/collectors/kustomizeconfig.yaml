@@ -1,0 +1,9 @@
+# Teaches kustomize where the container image lives on the OpenTelemetryCollector
+# CR so that `kustomize edit set image` (used by the publish-kustomize-bundle
+# workflow to stamp the release tag at publish time) actually rewrites spec.image
+# instead of silently leaving the dev placeholder behind.
+images:
+  - path: spec/image
+    kind: OpenTelemetryCollector
+    group: opentelemetry.io
+    version: v1beta1

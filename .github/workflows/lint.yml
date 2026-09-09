@@ -18,6 +18,7 @@ jobs:
           - receiver/natsreceiver
           - exporter/natsexporter
           - processor/unbatchprocessor
+          - queryapi
     steps:
       - name: Clone the code
         uses: actions/checkout@v4

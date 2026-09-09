@@ -1,0 +1,62 @@
+# A self-contained certificate authority for a throwaway cluster.
+#
+# config/queryapi/ deliberately ships no issuer: the serving certificate comes
+# from the cert-manager CSI driver against a ClusterIssuer the consumer already
+# runs (PLACEHOLDER-issuer). An e2e cluster has no such issuer, so this overlay
+# brings one.
+#
+# It is a *CA* issuer bootstrapped from a self-signed one, not a self-signed
+# issuer directly, and that indirection is load-bearing rather than ceremonial.
+# A selfSigned issuer mints an unrelated key pair per certificate and leaves no
+# CA object behind, so there would be nothing for the aggregator to trust: the
+# APIService's caBundle could only be filled by turning verification off. With
+# a CA issuer the CA lives in queryapi-e2e-ca as a Secret, cainjector copies it
+# into the APIService, and e2e exercises the same verified path production
+# does. This is the shape activity's cert-manager-ca component uses.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: queryapi-e2e-selfsigned-issuer
+  namespace: o11y-system
+  labels:
+    app.kubernetes.io/name: queryapi
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: queryapi-e2e-ca
+  namespace: o11y-system
+  labels:
+    app.kubernetes.io/name: queryapi
+spec:
+  isCA: true
+  commonName: queryapi e2e CA
+  secretName: queryapi-e2e-ca
+  duration: 8760h # 1y -- a test cluster outlives nothing
+  renewBefore: 720h
+  issuerRef:
+    kind: Issuer
+    name: queryapi-e2e-selfsigned-issuer
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  # Without this annotation on the resulting Secret, cainjector refuses to
+  # honour the cert-manager.io/inject-ca-from-secret annotation the APIService
+  # carries, and the caBundle stays empty. It is opt-in precisely because
+  # pointing an injector at an arbitrary Secret is a trust decision.
+  secretTemplate:
+    annotations:
+      cert-manager.io/allow-direct-injection: "true"
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: queryapi-e2e-ca-issuer
+  namespace: o11y-system
+  labels:
+    app.kubernetes.io/name: queryapi
+spec:
+  ca:
+    secretName: queryapi-e2e-ca

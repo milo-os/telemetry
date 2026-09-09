@@ -1,0 +1,26 @@
+apiVersion: iam.miloapis.com/v1alpha1
+kind: Role
+metadata:
+  name: telemetry.miloapis.com-viewer
+  annotations:
+    kubernetes.io/display-name: Telemetry Viewer
+    kubernetes.io/description: "View access to all telemetry resources"
+spec:
+  launchStage: Beta
+  includedPermissions:
+    - telemetry.miloapis.com/exportpolicies.list
+    - telemetry.miloapis.com/exportpolicies.get
+    - telemetry.miloapis.com/exportpolicies.watch
+    # Reading telemetry itself. Two gates: `get` is what Milo's aggregator
+    # asks for to allow the proxy hop at all -- it cannot tell the routes
+    # apart -- and the rest are queryapi's own, per route. A caller needs both.
+    - o11y.miloapis.com/logs.get
+    - o11y.miloapis.com/metrics.get
+    # query returns log lines or samples; the get* actions return only metadata
+    # about them.
+    - o11y.miloapis.com/logs.query
+    - o11y.miloapis.com/logs.getLabels
+    - o11y.miloapis.com/logs.getSeries
+    - o11y.miloapis.com/metrics.query
+    - o11y.miloapis.com/metrics.getLabels
+    - o11y.miloapis.com/metrics.getSeries

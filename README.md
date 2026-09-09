@@ -1,122 +1,136 @@
 # Telemetry Services
 
-The telemetry services operator is a Kubernetes operator designed to manage
-telemetry-related configurations for projects on the Datum Cloud platform. It
-provides a standardized way for users to configure and manage telemetry
-exporters, ensuring seamless integration with third-party observability
-platforms using OpenTelemetry.
+A Kubernetes operator and supporting workloads for managing telemetry on the
+Datum Cloud platform. It provides a standardized way to configure and manage
+telemetry exporters, ensuring seamless integration with observability platforms
+through OpenTelemetry.
 
-## Getting Started
+This repository is a multi-module Go workspace. Each module lives in its own
+directory with its own `go.mod`, and every module exposes its own `task` tasks
+for building, testing, linting, and deploying. The root `Taskfile.yaml` wires
+them together.
 
-### Prerequisites
-- go version v1.23.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+## Repository layout
 
-### To Deploy on the cluster
+| Path | Module | Description |
+| --- | --- | --- |
+| `operator/` | `go.datum.net/o11y/operator` | The operator: a Kubernetes controller that reconciles `ExportPolicy` CRs (`telemetry.miloapis.com/v1alpha1`). |
+| `clickhouse-migrate/` | `go.datum.net/o11y/clickhouse-migrate` | Applies SQL migrations to ClickHouse. Runs as a Kubernetes Job. |
+| `receiver/natsreceiver/` | `go.datum.net/o11y/receiver/natsreceiver` | OpenTelemetry collector receiver that reads logs from a NATS JetStream stream (used by the sink collector). |
+| `exporter/natsexporter/` | `go.datum.net/o11y/exporter/natsexporter` | OpenTelemetry collector exporter that publishes logs to NATS. |
+| `processor/unbatchprocessor/` | `go.datum.net/o11y/processor/unbatchprocessor` | OpenTelemetry collector processor that expands a batch back into one record per message. |
+| `otelcol/` | | OCB (opentelemetry collector builder) manifest + Dockerfile for the custom `o11y/otelcol` distribution that the collector CRs run on. |
+| `config/` | | Kustomize bundles published as an OCI artifact and consumed by Flux. |
 
-**Build and push your image to the location specified by `IMG`:**
+## Prerequisites
+
+- Go 1.24+ (see each module's `go.mod` for the exact version)
+- [task](https://taskfile.dev) v3
+- `kubectl` and access to a Kubernetes cluster
+- `docker` for building images and running the e2e/integration tests
+
+## Building and testing
+
+The root `Taskfile.yaml` aggregates the per-module tasks:
 
 ```sh
-make docker-build docker-push IMG=<some-registry>/telemetry-services-operator:tag
+task build   # build every module that has its own build task
+task test    # run every module's unit/controller tests
+task lint    # run golangci-lint in every module
+task tidy    # run go mod tidy in every module (mirrors CI)
+
+# Everything CI runs before a push. Note: includes the operator e2e suite,
+# which requires a running Kind cluster.
+task ci
 ```
 
-**NOTE:** This image ought to be published in the personal registry you
-specified. And it is required to have access to pull the image from the working
-environment. Make sure you have the proper permission to the registry if the
-above commands don’t work.
+Individual modules can be targeted directly via their include aliases, e.g.:
+
+```sh
+task operator:test
+task clickhouse-migrate:test
+task natsreceiver:test
+task natsexporter:test
+task unbatchprocessor:test
+```
+
+The operator module has the richest task set (run `task operator --list` for the
+full list). Highlights:
+
+```sh
+task operator:tidy
+task operator:test             # manifests + generate + fmt + vet + envtest unit tests
+task operator:test-e2e         # full e2e suite; expects a running Kind cluster
+task operator:lint
+task operator:api-docs         # regenerate CRD API reference docs into operator/docs/api
+```
+
+## Deploying the operator
+
+The operator is installed and deployed with `task` targets run from the
+`operator/` directory (or via `task operator:<target>` from the root).
 
 **Install the CRDs into the cluster:**
 
 ```sh
-make install
+task operator:install
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+**Deploy the manager to the cluster:**
 
 ```sh
-make deploy IMG=<some-registry>/telemetry-services-operator:tag
+task operator:deploy
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself
-cluster-admin privileges or be logged in as admin.
-
-**Create instances of your solution** You can apply the samples (examples) from
-the config/sample:
+The `deploy`/`build-installer` tasks stamp the operator image on a scratch copy
+of the kustomization, so the tracked `config/operator/manager/kustomization.yaml`
+is never mutated. By default the image resolves to `controller:latest`; override
+with `IMAGE_NAME`/`IMAGE_TAG`, e.g.:
 
 ```sh
-kubectl apply -k config/samples/
+task operator:deploy IMAGE_NAME=ghcr.io/milo-os/telemetry IMAGE_TAG=<tag>
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
-
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+**Apply a sample `ExportPolicy`:**
 
 ```sh
-kubectl delete -k config/samples/
+kubectl apply -k config/operator/samples/
 ```
 
-**Delete the APIs(CRDs) from the cluster:**
+**To uninstall:**
 
 ```sh
-make uninstall
+task operator:undeploy   # remove the manager
+task operator:uninstall  # remove the CRDs
 ```
 
-**UnDeploy the controller from the cluster:**
+## Collector bundles
 
-```sh
-make undeploy
-```
+`config/collectors/` holds the OpenTelemetryCollector CRs that run on the custom
+`o11y/otelcol` distribution:
 
-## Project Distribution
+- `gateway-collector` (deployment) — centralized OTLP push receiver, publishes logs to NATS.
+- `node-agent-collector` (daemonset) — node-local agent that tails pod logs and publishes to NATS.
+- `o11y-sink-collector` (hub-side deployment) — reads the hub NATS JetStream consumer and writes logs to ClickHouse.
 
-Following the options to release and provide this solution to the users.
+The collector image tags are stamped at publish time by the release workflow (see
+below); the in-repo manifests carry a `v0.0.0-dev` placeholder.
 
-### By providing a bundle with all YAML files
+## Releases and distribution
 
-1. Build the installer for the image built and published in the registry:
+On release, `.github/workflows/publish.yaml`:
 
-```sh
-make build-installer IMG=<some-registry>/telemetry-services-operator:tag
-```
+1. Builds and publishes the operator image (`ghcr.io/milo-os/telemetry`), the
+   clickhouse-migrate image (`ghcr.io/milo-os/telemetry-clickhouse-migrate`),
+   and the otelcol image (`ghcr.io/milo-os/o11y/otelcol`).
+2. Publishes the `config/` tree as a kustomize bundle OCI artifact
+   (`ghcr.io/milo-os/o11y/kustomize`), stamping the release image tags into each
+   overlay via Flux's `publish-kustomize-bundle` workflow.
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml' file
-in the dist directory. This file contains all the resources built with
-Kustomize, which are necessary to install this project without its dependencies.
+Consumers (e.g. Flux `OCIRepository`) pull the bundle and apply it with the
+released image tags baked in.
 
-2. Using the installer
+## Documentation
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install the
-project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/telemetry-services-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-kubebuilder edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users can obtain this
-solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart using the
-same command above to sync the latest changes. Furthermore, if you create
-webhooks, you need to use the above command with the '--force' flag and manually
-ensure that any custom configuration previously added to
-'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml' is manually
-re-applied afterwards.
-
----
-
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder
-Documentation](https://book.kubebuilder.io/introduction.html)
+- ClickHouse migrations: see `clickhouse-migrate/README.md`.
+- Operator CRD API reference: see `operator/docs/api/`.

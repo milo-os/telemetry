@@ -1,6 +1,11 @@
 version: '3'
 
 tasks:
+  tidy:
+    desc: Run go mod tidy (mirrors CI)
+    cmds:
+      - go mod tidy
+
   test:
     desc: Run Go tests
     cmds:
