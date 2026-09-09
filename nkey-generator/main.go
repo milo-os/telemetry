@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/nats-io/nkeys"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -353,9 +354,15 @@ func nkeyUser(cluster, publicKey string) map[string]any {
 	)
 }
 
-// droppedNkeys returns the nkey public keys present in prev but absent from
-// next. Static CN-mapped users have no "nkey" field and are excluded.
-func droppedNkeys(prev, next []map[string]any) []string {
+// droppedNkeys returns the cluster names of entries present in prev but
+// absent from next, excluding any whose per-cluster Secret has already been
+// deleted. That deletion is the operator's explicit signal that dropping the
+// nkey is an intentional PoP decommission rather than a transient Karmada
+// listing glitch -- without this check the safety net below could never be
+// satisfied: prev is read back from the very ConfigMap this function guards,
+// so a decommissioned cluster would be "dropped" forever with no way to
+// clear it. Static CN-mapped users have no "nkey" field and are excluded.
+func (g *generator) droppedNkeys(ctx context.Context, prev, next []map[string]any) ([]string, error) {
 	have := make(map[string]bool, len(next))
 	for _, u := range next {
 		if pub, ok := u["nkey"].(string); ok {
@@ -365,14 +372,52 @@ func droppedNkeys(prev, next []map[string]any) []string {
 	var dropped []string
 	for _, u := range prev {
 		pub, ok := u["nkey"].(string)
+		if !ok || have[pub] {
+			continue
+		}
+		cluster := clusterFromUser(u, pub)
+		secretName := g.cfg.secretPrefix + "-" + cluster
+		_, err := g.local.CoreV1().Secrets(g.cfg.namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if err == nil {
+			dropped = append(dropped, cluster)
+		} else if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("checking secret %s for dropped cluster %s: %w", secretName, cluster, err)
+		}
+	}
+	return dropped, nil
+}
+
+// clusterFromUser recovers the cluster name nkeyUser embeds in the logs
+// publish subject (o11y.logs.<cluster>.*), falling back to the raw public
+// key if that subject shape ever changes -- callers only use this for
+// display, so a degraded fallback is safe.
+func clusterFromUser(u map[string]any, fallback string) string {
+	perms, ok := u["permissions"].(map[string]any)
+	if !ok {
+		return fallback
+	}
+	publish, ok := perms["publish"].(map[string]any)
+	if !ok {
+		return fallback
+	}
+	allow, ok := publish["allow"].([]any)
+	if !ok {
+		return fallback
+	}
+	for _, s := range allow {
+		subj, ok := s.(string)
 		if !ok {
 			continue
 		}
-		if !have[pub] {
-			dropped = append(dropped, pub)
+		rest, ok := strings.CutPrefix(subj, "o11y.logs.")
+		if !ok {
+			continue
+		}
+		if cluster, ok := strings.CutSuffix(rest, ".*"); ok {
+			return cluster
 		}
 	}
-	return dropped
+	return fallback
 }
 
 // previousUsers reads the currently-applied ConfigMap's accounts.O11Y.users
@@ -413,8 +458,12 @@ func (g *generator) previousUsers(ctx context.Context, name string) []map[string
 // a human noticing.
 func (g *generator) writeConfigMap(ctx context.Context, users []map[string]any) error {
 	prev := g.previousUsers(ctx, g.cfg.configMapName)
-	if dropped := droppedNkeys(prev, users); len(dropped) > 0 {
-		return fmt.Errorf("refusing to write authorized-leafs: %d previously-authorized nkey(s) would be dropped: %v (if this is an intentional PoP decommission, delete its Secret %s-<cluster> and retry)", len(dropped), dropped, g.cfg.secretPrefix)
+	dropped, err := g.droppedNkeys(ctx, prev, users)
+	if err != nil {
+		return err
+	}
+	if len(dropped) > 0 {
+		return fmt.Errorf("refusing to write authorized-leafs: cluster(s) %v would be dropped but their nkey Secret %s-<cluster> still exists (delete it once the PoP decommission is confirmed, then retry)", dropped, g.cfg.secretPrefix)
 	}
 
 	valuesDoc := map[string]any{
