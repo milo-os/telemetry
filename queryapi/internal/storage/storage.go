@@ -90,6 +90,25 @@ type LogIterator interface {
 }
 
 // LogStore is a log query backend.
+// Label-name contract, binding on every implementation:
+//
+//   - A label name is always [_A-Za-z][_A-Za-z0-9]* -- what logql.scanIdent
+//     accepts. Backends therefore never surface a raw OTel attribute key: dots
+//     are not valid in a LogQL label name, and Grafana's own LogQL editor
+//     rejects them client-side, so a dotted name is a dimension no caller can
+//     filter on.
+//   - Sanitize defines the mapping, and Resolve applies it to inbound labels.
+//     A backend owes the same mapping on the way out, for the names it reports
+//     from LabelNames, Series and each Row's LabelSet. Every name a backend
+//     advertises must be one a matcher can then resolve; the defect this
+//     contract exists to prevent was a catalogue built from one source and
+//     matchers reading another.
+//   - Sanitize is not injective: k8s.pod.name and k8s_pod_name collapse to one
+//     name. Where a single record carries both, the label attribute wins and
+//     the resource one is unreachable, so LabelNames must not advertise that
+//     name -- an absent dimension beats one whose value silently drops half of
+//     its provenance. Spellings that appear on different records are not a
+//     collision; each resolves correctly on its own.
 type LogStore interface {
 	QueryLogs(ctx context.Context, q LogQuery) (LogIterator, error)
 	LabelNames(ctx context.Context, tr TimeRange) ([]string, error)

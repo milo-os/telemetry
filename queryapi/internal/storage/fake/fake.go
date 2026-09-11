@@ -77,7 +77,21 @@ func (s *Store) LabelNames(ctx context.Context, _ storage.TimeRange) ([]string, 
 	if _, ok := miloauth.ProjectID(ctx); !ok {
 		return nil, storage.ErrNoProject
 	}
-	return []string{"resource_name", "service_name", "severity"}, nil
+	// Derived from the catalogue, not listed separately. A hand-maintained
+	// list is how the ClickHouse backend came to advertise names its matchers
+	// could not resolve; deriving it means the two cannot drift.
+	seen := map[string]bool{}
+	for _, ls := range catalogue() {
+		for name := range ls {
+			seen[name] = true
+		}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (s *Store) LabelValues(ctx context.Context, label string, _ storage.TimeRange) ([]string, error) {
@@ -127,6 +141,11 @@ func catalogue() []storage.LabelSet {
 					"service_name":  svc.name,
 					"severity":      sev.name,
 					"resource_name": res,
+					// A dotted OTel key, carried sanitized. The fake exists to
+					// stand in for a real backend, so it has to demonstrate the
+					// LogStore label-name contract rather than satisfy it by
+					// only ever holding names that need no normalising.
+					storage.Sanitize("k8s.node.name"): "edge-" + res,
 				})
 			}
 		}

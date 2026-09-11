@@ -185,7 +185,7 @@ func TestDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LabelNames: %v", err)
 	}
-	want := []string{"resource_name", "service_name", "severity"}
+	want := []string{"k8s_node_name", "resource_name", "service_name", "severity"}
 	if len(names) != len(want) {
 		t.Fatalf("LabelNames = %v, want %v", names, want)
 	}
@@ -233,5 +233,41 @@ func TestRejectsNonPositiveLimit(t *testing.T) {
 func TestPing(t *testing.T) {
 	if err := fake.New(2).Ping(context.Background()); err != nil {
 		t.Fatalf("Ping: %v", err)
+	}
+}
+
+// TestLabelNamesAreAllResolvable is the LogStore label-name contract, checked
+// against the fake: every name LabelNames advertises must resolve to at least
+// one value, and must be spelled the way a matcher would be. The ClickHouse
+// backend violated both -- it advertised the keys of two attribute maps and
+// then read every one of them from a single map, and it advertised dotted OTel
+// keys the LogQL parser rejects.
+func TestLabelNamesAreAllResolvable(t *testing.T) {
+	store := fake.New(2)
+	ctx := miloauth.WithProject(context.Background(), "proj-a")
+	ran := storage.TimeRange{Start: time.Now().Add(-time.Hour), End: time.Now()}
+
+	names, err := store.LabelNames(ctx, ran)
+	if err != nil {
+		t.Fatalf("LabelNames: %v", err)
+	}
+	if len(names) == 0 {
+		t.Fatal("LabelNames returned nothing")
+	}
+
+	for _, name := range names {
+		if name != storage.Sanitize(name) {
+			t.Errorf("advertised name %q is not sanitized; no matcher can express it", name)
+		}
+		if _, err := logql.Parse("{" + name + `="x"}`); err != nil {
+			t.Errorf("advertised name %q is not a valid LogQL label: %v", name, err)
+		}
+		values, err := store.LabelValues(ctx, name, ran)
+		if err != nil {
+			t.Fatalf("LabelValues(%q): %v", name, err)
+		}
+		if len(values) == 0 {
+			t.Errorf("advertised name %q resolves to no values", name)
+		}
 	}
 }
