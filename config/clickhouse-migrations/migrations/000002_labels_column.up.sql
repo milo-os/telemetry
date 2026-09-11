@@ -1,0 +1,23 @@
+-- Labels is the tenant-facing label namespace: both attribute maps merged and
+-- normalised into names LogQL can express. Matchers and label discovery read
+-- only this column, so the catalogue and the query path cannot disagree about
+-- where a key lives -- the defect this replaces advertised the keys of both
+-- maps and then read every one of them from LogAttributes.
+--
+-- LogAttributes comes FIRST and the order is load-bearing. mapConcat does not
+-- deduplicate, so a key present in both maps appears twice, and Map[k] returns
+-- the first match. Log attributes are record-level and more specific than the
+-- resource's, so they must win, matching the query layer's assembleLabels.
+--
+-- Dots become underscores because LogQL label names cannot contain dots. The
+-- mapping is one-way: k8s.pod.name and k8s_pod_name collapse to one name. When
+-- both appear on the same record the duplicate key is preserved above, which
+-- is what lets label discovery detect the collision and stop advertising an
+-- ambiguous name.
+--
+-- MATERIALIZED, so the exporter's fixed INSERT column list is unaffected. New
+-- parts populate on write; existing parts need ALTER TABLE logs MATERIALIZE
+-- COLUMN Labels, which is an async mutation and is deliberately NOT run here
+-- (this migration would report success while it was still going). Retention
+-- also makes it optional: every part is replaced within one retention period.
+ALTER TABLE logs ADD COLUMN IF NOT EXISTS Labels Map(String, String) MATERIALIZED mapConcat(mapApply((k, v) -> (replaceAll(k, '.', '_'), v), LogAttributes), mapApply((k, v) -> (replaceAll(k, '.', '_'), v), ResourceAttributes))
