@@ -16,7 +16,7 @@
 -- ambiguous name.
 --
 -- MATERIALIZED, so the exporter's fixed INSERT column list is unaffected. New
--- parts populate on write; existing parts need ALTER TABLE logs MATERIALIZE
+-- parts populate on write -- existing parts need ALTER TABLE logs MATERIALIZE
 -- COLUMN Labels, which is an async mutation and is deliberately NOT run here
 -- (this migration would report success while it was still going). Retention
 -- also makes it optional: every part is replaced within one retention period.
