@@ -9,3 +9,5 @@ configMapGenerator:
     files:
       - migrations/000001_init.up.sql
       - migrations/000001_init.down.sql
+      - migrations/000002_labels_column.up.sql
+      - migrations/000002_labels_column.down.sql
