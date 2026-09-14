@@ -11,11 +11,17 @@ import (
 )
 
 // logsSelect lists the columns rowIterator scans, in the same order. The three
-// promoted columns and the two attribute maps build each row's label set (see
-// assembleLabels). ObservedTimestamp is the query key (window, order, partition),
-// frozen at Collector receipt per the 000001_init migration; Row.Timestamp is
-// filled from it.
-const logsSelect = "ObservedTimestamp, Body, ServiceName, SeverityText, TraceId, ResourceAttributes, LogAttributes"
+// promoted columns plus Labels build each row's label set (see assembleLabels).
+// ObservedTimestamp is the query key (window, order, partition), frozen at
+// Collector receipt per the 000001_init migration; Row.Timestamp is filled
+// from it.
+//
+// Labels is read as parallel key/value arrays, not as a Map. A
+// sanitized-name collision leaves a duplicate key in the column, and the
+// driver collapses a Map scan last-wins -- the opposite of the first-wins
+// precedence Labels[k] applies in SQL. Reading arrays preserves both entries
+// so assembleLabels can apply the same precedence the matchers do.
+const logsSelect = "ObservedTimestamp, Body, ServiceName, SeverityText, TraceId, mapKeys(Labels), mapValues(Labels)"
 
 // projectRange returns the WHERE fragments and args that scope a query to one
 // project over the half-open interval [Start, End), enforced as a partitioned
@@ -98,20 +104,21 @@ func lineFilterFragment(f logql.LineFilter) (string, []any) {
 	}
 }
 
-// labelExpr resolves a LogQL label to the SQL expression that reads its value
-// and any parameters it needs (map accesses bind the key). Known labels are
-// the schema's promoted columns; everything else is an attribute-map lookup.
+// labelExpr resolves a LogQL label to the SQL expression that reads its value.
+// Promoted columns read their column; every other label is a key in Labels,
+// the merged and normalised column the 000002 migration derives from both
+// attribute maps.
+//
+// Normalisation is the schema's job, so nothing here searches maps, sanitises
+// keys or decides precedence -- Labels already did all three at insert time,
+// which is why this is one native lookup binding one parameter.
 func labelExpr(label string) (string, []any) {
 	target, kind := storage.Resolve(label)
 	switch kind {
 	case storage.LabelColumn:
 		return target, nil
-	case storage.LabelResourceAttribute:
-		return "ResourceAttributes[?]", []any{target}
-	case storage.LabelLogAttribute:
-		return "LogAttributes[?]", []any{target}
 	default:
-		return target, nil
+		return "Labels[?]", []any{target}
 	}
 }
 
@@ -121,20 +128,29 @@ func fixedSchemaLabels() []string {
 	return []string{"service_name", "severity"}
 }
 
-// buildLabelNamesQuery lists the distinct attribute keys in the maps within a
-// project's window. The fixed schema columns are added by the store from
-// fixedSchemaLabels, so they are not part of this query.
+// buildLabelNamesQuery lists the label names in use within a project's window,
+// dropping any that collided.
+//
+// Names come from Labels, so they are already normalised -- the catalogue and
+// the matchers read one column and cannot disagree about spelling or
+// provenance. A name whose key appears twice in a row is a collision: two
+// distinct source keys collapsed onto it, Labels[k] silently resolves to one
+// of them, and the other is unreachable. Advertising that would break the
+// promise that every name here is queryable with a well-defined value, so the
+// aggregate suppresses it for the whole window rather than per row -- per row,
+// a record lacking the twin would re-advertise what another record suppressed.
+//
+// Only collisions co-located in one record are visible this way. Two records
+// carrying different spellings each resolve correctly on their own, so that is
+// not suppressed and should not be; see the design doc's collision semantics.
 func buildLabelNamesQuery(project string, tr storage.TimeRange) (string, []any) {
-	cond, prefix := projectRange(project, tr)
-
-	var frags []string
-	var args []any
-	for _, mapCol := range []string{"ResourceAttributes", "LogAttributes"} {
-		frags = append(frags, fmt.Sprintf(
-			"SELECT arrayJoin(mapKeys(%s)) FROM logs WHERE %s", mapCol, cond))
-		args = append(args, prefix...)
-	}
-	return strings.Join(frags, " UNION ALL "), args
+	cond, args := projectRange(project, tr)
+	return fmt.Sprintf(
+		"SELECT name FROM ("+
+			"SELECT arrayJoin(arrayDistinct(mapKeys(Labels))) AS name, "+
+			"countEqual(mapKeys(Labels), name) > 1 AS collided "+
+			"FROM logs WHERE %s"+
+			") GROUP BY name HAVING max(collided) = 0", cond), args
 }
 
 // buildLabelValuesQuery lists the distinct values of one label within a
@@ -158,7 +174,7 @@ var seriesAllowlist = []struct {
 }{
 	{label: "service_name", kind: storage.LabelColumn, target: "ServiceName"},
 	{label: "severity", kind: storage.LabelColumn, target: "SeverityText"},
-	{label: "resource_name", kind: storage.LabelResourceAttribute, target: "resource_name"},
+	{label: "resource_name", kind: storage.LabelAttribute, target: "resource_name"},
 }
 
 // buildSeriesQuery lists the distinct bounded label-sets matching the
@@ -208,9 +224,7 @@ func seriesExpr(slot struct {
 	switch slot.kind {
 	case storage.LabelColumn:
 		return slot.target, nil
-	case storage.LabelResourceAttribute:
-		return "ResourceAttributes[?]", []any{slot.target}
 	default:
-		return "LogAttributes[?]", []any{slot.target}
+		return "Labels[?]", []any{slot.target}
 	}
 }

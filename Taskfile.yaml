@@ -1,5 +1,13 @@
 version: '3'
 
+env:
+  # CI resolves the Go toolchain from each module's go.mod (currently 1.25.0)
+  # via setup-go. Locally, GOTOOLCHAIN=auto only upgrades when go.mod demands
+  # newer -- it won't downgrade a newer installed Go, so a newer local Go can
+  # diverge from what CI actually runs against (e.g. golangci-lint's pinned
+  # version failing to typecheck a newer stdlib). Pin it to match CI.
+  GOTOOLCHAIN: go1.25.0
+
 tasks:
   build:
     desc: Build every module that has its own build task
