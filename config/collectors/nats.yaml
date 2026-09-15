@@ -7,7 +7,11 @@ metadata:
   name: nats-config
 data:
   nats.conf: |
-    server_name: edge-nats
+    # Must be unique per site: the hub keys leaf connections on this name and
+    # evicts the incumbent on a match, so a shared name makes every edge
+    # displace the last one. ${cluster} is substituted by the deployment
+    # channel and is stable across restarts.
+    server_name: edge-nats-${cluster}
     listen: 0.0.0.0:4222
     tls {
       cert_file: "/etc/nats-server-tls/tls.crt"
