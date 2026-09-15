@@ -7,11 +7,6 @@ metadata:
   name: nats-config
 data:
   nats.conf: |
-    # Must be unique per site: the hub keys leaf connections on this name and
-    # evicts the incumbent on a match, so a shared name makes every edge
-    # displace the last one. ${cluster} is substituted by the deployment
-    # channel and is stable across restarts.
-    server_name: edge-nats-${cluster}
     listen: 0.0.0.0:4222
     tls {
       cert_file: "/etc/nats-server-tls/tls.crt"
@@ -77,7 +72,13 @@ spec:
               memory: 64Mi
         - name: nats
           image: nats:2.14.6-alpine
-          command: ["nats-server", "-c", "/etc/nats/nats.conf"]
+          # server_name lives here, not in the mounted config, so it takes
+          # effect on deploy. It must be unique per site -- the hub keys leaf
+          # connections on it and evicts the incumbent on a match, so a shared
+          # name makes every edge displace the last. A change to it rolls the
+          # pod, which a mounted-config change would not: nats reads the name
+          # only at startup and the config volume hot-updates without a restart.
+          command: ["nats-server", "-c", "/etc/nats/nats.conf", "--name", "edge-nats-${cluster}"]
           env:
             - name: NATS_HUB_LEAFNODE_URL
               value: "${hub_leafnode_url}"
