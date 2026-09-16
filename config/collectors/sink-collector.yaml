@@ -106,10 +106,13 @@ spec:
                 where log.observed_time_unix_nano != 0
 
       # Amortize clickhouseexporter INSERTs: the receiver delivers one message
-      # per edge-published record.
+      # per edge-published record. Sized so the ~10 concurrent in-flight
+      # batches (exporterhelper's default queue concurrency) sum past
+      # ClickHouse's async_insert_max_data_size (10MB), so it flushes on size
+      # instead of waiting out the busy_timeout on every insert (infra#5519).
       batch:
         timeout: 10s
-        send_batch_size: 512
+        send_batch_size: 8192
 
     exporters:
       # Contrib clickhouseexporter registers under the id `clickhouse`, so the
