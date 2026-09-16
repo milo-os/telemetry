@@ -70,7 +70,7 @@ func project(ctx context.Context) (string, error) {
 // TO queryapi, so every query must set it or match no rows.
 func projectContext(ctx context.Context, project string) context.Context {
 	return ch.Context(ctx, ch.WithSettings(ch.Settings{
-		"telemetry_project_id": project,
+		"telemetry_project_id": ch.CustomSetting{Value: project},
 	}))
 }
 

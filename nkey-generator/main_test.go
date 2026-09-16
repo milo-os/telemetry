@@ -8,10 +8,13 @@ import (
 	"testing"
 
 	"github.com/nats-io/nkeys"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"sigs.k8s.io/yaml"
 )
@@ -111,19 +114,44 @@ func TestDroppedNkeysDetection(t *testing.T) {
 		nkeyUser("us-east-1", "UD5ULF5HDXSAB42CKHYDGDQ5E53AJNSXYW72MEYMHNVGAQKNRZS55H5N"),
 		nkeyUser("us-west-1", "UAAAA5HDXSAB42CKHYDGDQ5E53AJNSXYW72MEYMHNVGAQKNRZS55H5N"),
 	}
-	// us-west-1's nkey user vanished from the new set -- must be caught.
+	// us-west-1's nkey user vanished from the new set -- must be caught, but
+	// only while its Secret still exists.
 	next := []map[string]any{
 		nkeyUser("us-east-1", "UD5ULF5HDXSAB42CKHYDGDQ5E53AJNSXYW72MEYMHNVGAQKNRZS55H5N"),
 	}
+	cfg := config{namespace: "o11y-system", secretPrefix: "nats-leaf-nkey"}
 
-	dropped := droppedNkeys(prev, next)
-	if len(dropped) != 1 || dropped[0] != "UAAAA5HDXSAB42CKHYDGDQ5E53AJNSXYW72MEYMHNVGAQKNRZS55H5N" {
-		t.Fatalf("droppedNkeys = %v, want the us-west-1 public key", dropped)
+	g := &generator{cfg: cfg, local: k8sfake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "nats-leaf-nkey-us-west-1", Namespace: "o11y-system"},
+	})}
+	dropped, err := g.droppedNkeys(context.Background(), prev, next)
+	if err != nil {
+		t.Fatalf("droppedNkeys: %v", err)
+	}
+	if len(dropped) != 1 || dropped[0] != "us-west-1" {
+		t.Fatalf("droppedNkeys = %v, want [us-west-1] (its Secret still exists)", dropped)
+	}
+
+	// Once the operator deletes us-west-1's Secret -- the explicit signal
+	// that this is an intentional decommission -- it must stop being
+	// reported, or the safety check could never be satisfied: prev is read
+	// back from the very ConfigMap it guards.
+	g2 := &generator{cfg: cfg, local: k8sfake.NewSimpleClientset()}
+	dropped2, err := g2.droppedNkeys(context.Background(), prev, next)
+	if err != nil {
+		t.Fatalf("droppedNkeys: %v", err)
+	}
+	if len(dropped2) != 0 {
+		t.Fatalf("droppedNkeys = %v, want none once the Secret is gone", dropped2)
 	}
 
 	// A rotated key for the same cluster is also a drop of the old key --
 	// that's still correct: the old key really is no longer authorized.
-	if len(droppedNkeys(prev, prev)) != 0 {
+	dropped3, err := g.droppedNkeys(context.Background(), prev, prev)
+	if err != nil {
+		t.Fatalf("droppedNkeys: %v", err)
+	}
+	if len(dropped3) != 0 {
 		t.Fatalf("identical sets must report no drops")
 	}
 }

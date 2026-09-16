@@ -127,6 +127,15 @@ paths:
         unioned with the distinct keys currently present in `LogAttributes`/
         `ResourceAttributes`, scoped to the caller's project_id — a project
         never sees a label name that only exists in another project's data.
+
+
+        Every name returned here is queryable. OTel attribute keys contain
+        dots, which LogQL label names cannot, so keys are returned with dots
+        replaced by underscores — `k8s.node.name` is advertised, and must be
+        matched, as `k8s_node_name`. The same spelling appears on returned log
+        lines. Because the mapping is not reversible, two keys differing only
+        in dots versus underscores collapse to one label name whose matcher
+        selects either.
       tags: [discovery]
       parameters:
         - $ref: "#/components/parameters/Start"
@@ -153,9 +162,11 @@ paths:
         /loki/api/v1/label/{name}/values)
       description: >-
         `name=service_name` and `name=severity` read the corresponding fixed
-        column; any other name reads `LogAttributes[name]`/
-        `ResourceAttributes[name]`. Scoped to the caller's project_id, same as
-        every other endpoint here.
+        column; any other name is matched against the keys of both
+        `LogAttributes` and `ResourceAttributes`, so a label resolves wherever
+        its key happens to live. Where both maps hold it, the log attribute
+        wins. Names use the underscored spelling `/labels` advertises. Scoped
+        to the caller's project_id, same as every other endpoint here.
       tags: [discovery]
       parameters:
         - name: name
@@ -426,8 +437,14 @@ components:
       type: http
       scheme: bearer
       description: >-
-        Forwarded through milo-api; project_id is resolved server-side from
-        this token and is never a client-supplied parameter.
+        Two paths reach this service, and neither lets a client name its own
+        tenant. Normally Milo terminates the caller's credential and the
+        kube-aggregator proxy forwards the identity as X-Remote-* headers,
+        which this service's delegating authenticator accepts only after
+        verifying the connection's client certificate against the front
+        proxy's CA. A bearer token presented directly is also accepted, and is
+        reviewed the same way. In both cases project_id is read from the
+        resulting verified identity and is never a client-supplied parameter.
 
   parameters:
     LogQLQuery:
@@ -439,6 +456,11 @@ components:
         and line filters (`|= "text"`, `!= "text"`, `|~ "regex"`, `!~ "regex"`).
         Metric-style aggregations (count_over_time, rate), parser expressions
         (| json, | logfmt), and line_format/label_format are rejected with 400.
+
+
+        Label names are `[_A-Za-z][_A-Za-z0-9]*` — dots are not valid, so an
+        OTel key is matched by its underscored name (`k8s_node_name`, not
+        `k8s.node.name`), exactly as `/labels` advertises it.
       schema:
         type: string
       example: '{service_name="compute-workload", severity="ERROR"} |= "timeout"'
@@ -516,9 +538,10 @@ components:
     UnexpectedError:
       description: >-
         Any error status not explicitly listed above, including 501 Not
-        Implemented — every handler in the current scaffold is a stub and
-        returns this until the ClickHouse/JetStream-backed implementation
-        lands.
+        Implemented. The log endpoints are served from ClickHouse; the metric
+        endpoints are still stubs and answer 501 unconditionally. A log
+        endpoint returns 501 only for an operation the configured storage
+        backend does not implement.
       content:
         application/json:
           schema:

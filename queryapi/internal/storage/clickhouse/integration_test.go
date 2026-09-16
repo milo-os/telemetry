@@ -108,6 +108,7 @@ func TestStoreAgainstClickHouse(t *testing.T) {
 	runQueryLogs(t, store, ctx, ran)
 	runLabelNames(t, store, ctx, ran)
 	runLabelValues(t, store, ctx, ran)
+	runResourceOnlyLabelRoundTrip(t, store, ctx, ran)
 	runSeries(t, store, ctx, ran)
 
 	// Tenancy holds even against a live server.
@@ -127,7 +128,10 @@ func insertRows(t *testing.T, conn driver.Conn, base time.Time) {
 		if err := conn.Exec(context.Background(), insert,
 			base.Add(time.Duration(i)*time.Second), base.Add(time.Duration(i)*time.Second), svc, sev, sevNum,
 			"line "+string(rune('a'+i)),
-			map[string]string{"milo.project.id": "proj-a", "resource_name": "gateway-us-east"},
+			// k8s.node.name is written ONLY to the resource map, and dotted.
+			// It is the shape that used to be advertised by /labels and then
+			// read out of LogAttributes, resolving to nothing.
+			map[string]string{"milo.project.id": "proj-a", "resource_name": "gateway-us-east", "k8s.node.name": "edge-3"},
 			map[string]string{"http_method": "GET"},
 		); err != nil {
 			t.Fatalf("insert row %d: %v", i, err)
@@ -183,10 +187,57 @@ func runLabelNames(t *testing.T, store *Store, ctx context.Context, ran storage.
 	if err != nil {
 		t.Fatalf("LabelNames: %v", err)
 	}
-	for _, want := range []string{"service_name", "severity", "resource_name", "http_method", "milo.project.id"} {
+	// Dotted OTel keys are advertised sanitized, which is the only spelling a
+	// matcher accepts -- so the catalogue and the query path agree.
+	for _, want := range []string{"service_name", "severity", "resource_name", "http_method", "milo_project_id", "k8s_node_name"} {
 		if !containsStr(names, want) {
 			t.Errorf("LabelNames missing %q, got %v", want, names)
 		}
+	}
+	for _, unwanted := range []string{"milo.project.id", "k8s.node.name"} {
+		if containsStr(names, unwanted) {
+			t.Errorf("LabelNames advertised the unsanitized key %q, which no matcher accepts: %v", unwanted, names)
+		}
+	}
+}
+
+// runResourceOnlyLabelRoundTrip is the regression test for the defect this
+// change fixes. Every label /labels advertises must be usable, so a
+// resource-only dotted key has to survive all three paths: the catalogue, its
+// values, and a matcher that actually selects rows.
+func runResourceOnlyLabelRoundTrip(t *testing.T, store *Store, ctx context.Context, ran storage.TimeRange) {
+	t.Helper()
+
+	values, err := store.LabelValues(ctx, "k8s_node_name", ran)
+	if err != nil {
+		t.Fatalf("LabelValues(k8s_node_name): %v", err)
+	}
+	if !containsStr(values, "edge-3") {
+		t.Errorf("LabelValues(k8s_node_name) = %v, want edge-3 -- a resource-only key resolved to nothing", values)
+	}
+
+	q := parse(t, `{k8s_node_name="edge-3"}`)
+	iter, err := store.QueryLogs(ctx, storage.LogQuery{
+		Matchers: q.Matchers, Range: ran, Limit: 10, Direction: storage.DirectionForward,
+	})
+	if err != nil {
+		t.Fatalf("QueryLogs(k8s_node_name): %v", err)
+	}
+	var rows int
+	for iter.Next() {
+		if got := iter.Row().Labels["k8s_node_name"]; got != "edge-3" {
+			t.Errorf("row k8s_node_name = %q, want edge-3: %v", got, iter.Row().Labels)
+		}
+		rows++
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("QueryLogs(k8s_node_name) iterate: %v", err)
+	}
+	if err := iter.Close(); err != nil {
+		t.Fatalf("QueryLogs(k8s_node_name) close: %v", err)
+	}
+	if rows != 3 {
+		t.Errorf("matcher on a resource-only label selected %d rows, want 3", rows)
 	}
 }
 

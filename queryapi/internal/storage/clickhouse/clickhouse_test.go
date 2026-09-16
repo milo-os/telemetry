@@ -118,7 +118,7 @@ func TestBuildLogsQueryTranslation(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"SELECT ObservedTimestamp, Body, ServiceName, SeverityText, TraceId, ResourceAttributes, LogAttributes FROM logs",
+		"SELECT " + logsSelect + " FROM logs",
 		"ProjectId = ?",
 		"ObservedTimestamp >= ?",
 		"ObservedTimestamp < ?",
@@ -144,7 +144,10 @@ func TestBuildLogsQueryTranslation(t *testing.T) {
 	}
 }
 
-func TestBuildLogsQueryAttributeMatcherUsesMap(t *testing.T) {
+// An attribute matcher reads the merged, pre-normalised Labels column. The
+// query no longer decides which map holds a key -- the schema already merged
+// them -- so this is a single native lookup binding one parameter.
+func TestBuildLogsQueryAttributeMatcherUsesLabelsColumn(t *testing.T) {
 	q := parseQuery(t, `{resource_name="gateway-us-east"}`)
 	lq := storage.LogQuery{
 		Matchers:  q.Matchers,
@@ -156,17 +159,47 @@ func TestBuildLogsQueryAttributeMatcherUsesMap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildLogsQuery: %v", err)
 	}
-	if !strings.Contains(query, "ResourceAttributes[?] = ?") {
-		t.Errorf("resource matcher did not use a map access: %s", query)
+	if !strings.Contains(query, "Labels[?] = ?") {
+		t.Errorf("attribute matcher did not read the Labels column: %s", query)
 	}
+	for _, gone := range []string{"mapContains", "arrayFirst", "replaceAll"} {
+		if strings.Contains(query, gone) {
+			t.Errorf("matcher still references %q; normalisation belongs to the schema now: %s", gone, query)
+		}
+	}
+	// project+range, the key, the value, the limit.
 	if len(args) != 6 {
-		t.Errorf("len(args) = %d, want 6 (project,range) + key + value", len(args))
+		t.Fatalf("len(args) = %d, want 6 (got %v)", len(args), args)
 	}
-	if args[3] != "resource_name" {
-		t.Errorf("args[3] (map key) = %v, want resource_name", args[3])
+	if args[3] != "resource_name" || args[4] != "gateway-us-east" {
+		t.Errorf("args[3]=%v args[4]=%v, want key then value", args[3], args[4])
 	}
-	if args[4] != "gateway-us-east" {
-		t.Errorf("args[4] (matcher value) = %v, want gateway-us-east", args[4])
+}
+
+// A dotted OTel key is spelled with underscores, and Resolve sanitises inbound
+// so the bound key matches what the schema wrote.
+func TestBuildLogsQueryMatcherBindsSanitizedKey(t *testing.T) {
+	q := parseQuery(t, `{k8s_node_name="edge-3"}`)
+	lq := storage.LogQuery{Matchers: q.Matchers, Range: tr(), Limit: 10}
+	_, args, err := buildLogsQuery("p", lq)
+	if err != nil {
+		t.Fatalf("buildLogsQuery: %v", err)
+	}
+	if args[3] != "k8s_node_name" {
+		t.Errorf("args[3] = %v, want the sanitized key k8s_node_name", args[3])
+	}
+}
+
+// Rows are read as parallel key/value arrays rather than as a Map, because a
+// sanitized-name collision leaves a duplicate key in Labels and the driver
+// collapses a Map scan last-wins -- the opposite of the first-wins precedence
+// SQL applies. Scanning arrays keeps both and lets assembleLabels match SQL.
+func TestLogsSelectReadsLabelArrays(t *testing.T) {
+	if !strings.Contains(logsSelect, "mapKeys(Labels)") || !strings.Contains(logsSelect, "mapValues(Labels)") {
+		t.Errorf("logsSelect must read Labels as parallel arrays: %s", logsSelect)
+	}
+	if strings.Contains(logsSelect, "ResourceAttributes") || strings.Contains(logsSelect, "LogAttributes") {
+		t.Errorf("logsSelect should no longer read the raw maps: %s", logsSelect)
 	}
 }
 
@@ -178,22 +211,31 @@ func TestBuildLogsQueryRejectsNonPositiveLimit(t *testing.T) {
 	}
 }
 
-func TestBuildLabelNamesQuery(t *testing.T) {
+// The catalogue aggregates per window and drops any name that collided within
+// a row, so /labels never advertises a name whose value silently lost half its
+// provenance. Per-row filtering would let a row lacking the twin re-advertise
+// a name another row suppressed.
+func TestBuildLabelNamesQuerySuppressesCollisions(t *testing.T) {
 	query, args := buildLabelNamesQuery("proj-abc", tr())
-	if strings.Count(query, "arrayJoin(mapKeys(") != 2 {
-		t.Errorf("expected two mapKeys fragments:\n%s", query)
-	}
-	// Two fragments, each binding project+range = 6 placeholders.
-	if strings.Count(query, "ProjectId = ?") != 2 {
-		t.Errorf("expected project filter in both fragments:\n%s", query)
-	}
-	if len(args) != 6 {
-		t.Errorf("len(args) = %d, want 6", len(args))
-	}
-	for i := 0; i < 6; i += 3 {
-		if args[i] != "proj-abc" {
-			t.Errorf("args[%d] = %v, want project", i, args[i])
+
+	for _, want := range []string{
+		"mapKeys(Labels)",
+		"countEqual(mapKeys(Labels), name) > 1",
+		"GROUP BY name",
+		"HAVING max(collided) = 0",
+	} {
+		if !strings.Contains(query, want) {
+			t.Errorf("label-names query missing %q:\n%s", want, query)
 		}
+	}
+	if strings.Contains(query, "UNION ALL") {
+		t.Errorf("label-names query should be a single aggregate:\n%s", query)
+	}
+	if len(args) != 3 {
+		t.Fatalf("len(args) = %d, want 3 (project+range), got %v", len(args), args)
+	}
+	if args[0] != "proj-abc" {
+		t.Errorf("args[0] = %v, want project", args[0])
 	}
 }
 
@@ -207,7 +249,7 @@ func TestBuildLabelValuesQueryColumnVsAttribute(t *testing.T) {
 	}
 
 	attrQuery, attrArgs := buildLabelValuesQuery("p", "http_method", tr())
-	if !strings.Contains(attrQuery, "SELECT DISTINCT LogAttributes[?] FROM logs") {
+	if !strings.Contains(attrQuery, "SELECT DISTINCT Labels[?] FROM logs") {
 		t.Errorf("attribute label query incorrect: %s", attrQuery)
 	}
 	if attrArgs[0] != "http_method" {
@@ -218,39 +260,60 @@ func TestBuildLabelValuesQueryColumnVsAttribute(t *testing.T) {
 	}
 }
 
+// The endpoint's original defect, at the query-builder level: a label whose
+// key lives only in ResourceAttributes was advertised by /labels and then read
+// from LogAttributes, so it returned nothing. Its values query must reach the
+// resource map.
+func TestBuildLabelValuesQueryReachesResourceOnlyKey(t *testing.T) {
+	query, args := buildLabelValuesQuery("p", "k8s_node_name", tr())
+	if !strings.Contains(query, "Labels[?]") {
+		t.Errorf("resource-only label cannot resolve:\n%s", query)
+	}
+	if args[0] != "k8s_node_name" {
+		t.Errorf("map key arg = %v, want k8s_node_name", args[0])
+	}
+}
+
 func TestBuildSeriesQueryGroupsAllowlist(t *testing.T) {
 	q := parseQuery(t, `{service_name="envoy-gateway"}`)
 	query, args := buildSeriesQuery("proj-abc", q.Matchers, tr())
 
-	if !strings.Contains(query, "GROUP BY ServiceName, SeverityText, ResourceAttributes[?]") {
+	if !strings.Contains(query, "GROUP BY ServiceName, SeverityText, Labels[?]") {
 		t.Errorf("series query does not group the allowlist:\n%s", query)
 	}
 	if !strings.Contains(query, "ServiceName = ?") {
 		t.Errorf("series query missing the selector matcher:\n%s", query)
 	}
-	// SELECT key + WHERE (project+range+value) + GROUP BY key = 6 args.
-	if len(args) != 6 {
-		t.Errorf("len(args) = %d, want 6 (got %v)", len(args), args)
+	// SELECT key + WHERE (project+range+value) + GROUP BY key, since the
+	// GROUP BY text repeats the expression.
+	wantLen := 1 + 4 + 1
+	if len(args) != wantLen {
+		t.Fatalf("len(args) = %d, want %d (got %v)", len(args), wantLen, args)
 	}
-	if args[0] != "resource_name" || args[5] != "resource_name" {
-		t.Errorf("args[0]=%v args[5]=%v, want resource_name bound for SELECT and GROUP BY", args[0], args[5])
+	if args[0] != "resource_name" || args[len(args)-1] != "resource_name" {
+		t.Errorf("args[0]=%v args[last]=%v, want resource_name bound for SELECT and GROUP BY",
+			args[0], args[len(args)-1])
 	}
 	if args[1] != "proj-abc" {
 		t.Errorf("args[1] = %v, want project", args[1])
 	}
 }
 
+// Every label on a returned row must be one a matcher accepts, so keys are
+// sanitized on the way out too. Returning http.method while the parser rejects
+// that name is the round-trip break: the client is handed a dimension it
+// cannot filter on.
 func TestAssembleLabels(t *testing.T) {
 	ls := assembleLabels("envoy-gateway", "INFO", "trace-1",
-		map[string]string{"resource_name": "gateway-us-east", "host": ""},
-		map[string]string{"http.method": "GET", "empty": ""})
+		[]string{"k8s_node_name", "host", "http_method", "empty"},
+		[]string{"edge-3", "", "GET", ""})
 
 	want := storage.LabelSet{
 		"service_name":  "envoy-gateway",
 		"severity":      "INFO",
 		"trace_id":      "trace-1",
-		"resource_name": "gateway-us-east",
-		"http.method":   "GET",
+		"k8s_node_name": "edge-3",
+		"http_method":   "GET",
 	}
 	if len(ls) != len(want) {
 		t.Fatalf("assembleLabels = %v, want %v (empty attribute values must be dropped)", ls, want)
@@ -262,22 +325,69 @@ func TestAssembleLabels(t *testing.T) {
 	}
 }
 
+// TestAssembleLabelsShadowsCollidingSpellings pins what happens when two keys
+// sanitize to one label name: the log attribute shadows the resource one, and
+// the resource twin's value is not reachable under any name.
+//
+// This is a real limitation, not a nicety -- /labels advertises one dimension
+// whose value comes from whichever twin a given row carries, so its meaning
+// can differ row to row. It is pinned here so the precedence cannot change
+// silently, and so the cost of the sanitization trade-off is visible in a test
+// rather than only in a comment.
+func TestAssembleLabelsShadowsCollidingSpellings(t *testing.T) {
+	// Labels' own order, LogAttributes first per the 000002 migration.
+	ls := assembleLabels("svc", "INFO", "",
+		[]string{"k8s_pod_name", "k8s_pod_name"},
+		[]string{"from-log", "from-resource"})
+
+	if got := ls["k8s_pod_name"]; got != "from-log" {
+		t.Errorf("k8s_pod_name = %q, want from-log (log attributes shadow resource ones)", got)
+	}
+	if got := ls["k8s_pod_name"]; got == "from-resource" {
+		t.Errorf("the shadowed resource value won: %v", ls)
+	}
+	// One dimension, not two -- the collapse is what makes the value ambiguous.
+	count := 0
+	for k := range ls {
+		if k == "k8s_pod_name" {
+			count++
+		}
+	}
+	if count != 1 || len(ls) != 3 {
+		t.Errorf("colliding spellings did not collapse to one label: %v", ls)
+	}
+}
+
+// A row carrying only the resource twin resolves the same label name to the
+// resource value -- the other half of the ambiguity above.
+func TestAssembleLabelsResourceTwinAloneResolves(t *testing.T) {
+	ls := assembleLabels("svc", "INFO", "",
+		[]string{"k8s_pod_name"}, []string{"from-resource"})
+
+	if got := ls["k8s_pod_name"]; got != "from-resource" {
+		t.Errorf("k8s_pod_name = %q, want from-resource", got)
+	}
+}
+
 // The sink writes an observed-time attribute on every record, so it would
 // otherwise show up as a label on every row and in /labels.
 func TestInternalAttributesAreNotLabels(t *testing.T) {
 	ls := assembleLabels("envoy-gateway", "INFO", "",
-		nil,
-		map[string]string{"telemetry.observed_time_unix_nano": "1757340000000000000", "http.method": "GET"})
+		[]string{"telemetry_observed_time_unix_nano", "http_method"},
+		[]string{"1757340000000000000", "GET"})
 
-	if _, leaked := ls["telemetry.observed_time_unix_nano"]; leaked {
+	if _, leaked := ls["telemetry_observed_time_unix_nano"]; leaked {
 		t.Errorf("assembleLabels leaked the internal attribute: %v", ls)
 	}
-	if ls["http.method"] != "GET" {
+	if ls["http_method"] != "GET" {
 		t.Errorf("assembleLabels dropped a real attribute: %v", ls)
 	}
 
-	got := withoutInternalAttributes([]string{"http.method", "telemetry.observed_time_unix_nano", "resource_name"})
-	want := []string{"http.method", "resource_name"}
+	// The catalogue sanitizes keys in SQL, so this filter sees the sanitized
+	// spelling. Comparing against the dotted key here would silently stop
+	// suppressing it.
+	got := withoutInternalAttributes([]string{"http_method", "telemetry_observed_time_unix_nano", "resource_name"})
+	want := []string{"http_method", "resource_name"}
 	if len(got) != len(want) {
 		t.Fatalf("withoutInternalAttributes = %v, want %v", got, want)
 	}
@@ -363,5 +473,49 @@ func TestPingFailsWhenUnreachable(t *testing.T) {
 	defer cancel()
 	if err := store.Ping(ctx); err == nil {
 		t.Fatal("Ping to an unresolvable host succeeded, want error")
+	}
+}
+
+// TestMigrationPutsLogAttributesFirst guards the one thing about this design
+// that is silently wrong if reversed, and that no Go test would otherwise
+// catch: precedence now lives in the schema, not in this package.
+//
+// mapConcat does not deduplicate and Map[k] returns the first match, so the
+// argument order in 000002 decides which attribute wins a sanitized-name
+// collision. assembleLabels applies first-wins to match it. Swap the arguments
+// and SQL silently resolves to the resource attribute while this package still
+// reports the log one -- the split between read path and query path that the
+// original /labels defect was made of.
+func TestMigrationPutsLogAttributesFirst(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "..",
+		"config", "clickhouse-migrations", "migrations", "000002_labels_column.up.sql")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	sql := string(raw)
+
+	// Anchor on the real statement: the comment above it also says
+	// "ALTER TABLE logs MATERIALIZE COLUMN", and matching that would parse
+	// prose instead of DDL.
+	at := strings.Index(sql, "ALTER TABLE logs ADD COLUMN")
+	if at < 0 {
+		t.Fatalf("migration has no ADD COLUMN statement:\n%s", sql)
+	}
+	stmt := sql[at:]
+	log := strings.Index(stmt, "LogAttributes")
+	res := strings.Index(stmt, "ResourceAttributes")
+	if log < 0 || res < 0 {
+		t.Fatalf("migration does not merge both attribute maps:\n%s", stmt)
+	}
+	if log > res {
+		t.Errorf("000002 lists ResourceAttributes before LogAttributes, so SQL resolves a "+
+			"collision to the resource attribute while assembleLabels reports the log one:\n%s", stmt)
+	}
+	if !strings.Contains(stmt, "MATERIALIZED") {
+		t.Errorf("Labels must be MATERIALIZED or the exporter's fixed INSERT list breaks:\n%s", stmt)
+	}
+	if !strings.Contains(stmt, "replaceAll(k, '.', '_')") {
+		t.Errorf("migration does not sanitize dots to underscores:\n%s", stmt)
 	}
 }
