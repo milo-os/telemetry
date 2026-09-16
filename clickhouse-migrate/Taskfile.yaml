@@ -24,14 +24,17 @@ tasks:
   test-integration:
     desc: Run the migration tests against a throwaway ClickHouse container (needs docker)
     vars:
-      IMAGE: clickhouse/clickhouse-server:25.3
+      IMAGE: clickhouse/clickhouse-server:26.1
       CONTAINER: clickhouse-migrate-test
       PASSWORD: test
       PORT: 19000
     cmds:
       - docker rm -f {{.CONTAINER}} >/dev/null 2>&1 || true
       # ACCESS_MANAGEMENT: the suite creates its own users; setup dies without it.
-      - docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -p {{.PORT}}:9000 {{.IMAGE}}
+      # The mounted config gives the node an embedded Keeper and macros so the
+      # Replicated database and ReplicatedMergeTree tables the migrations create
+      # resolve on a single node.
+      - docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 -p {{.PORT}}:9000 -v {{.TASKFILE_DIR}}/testdata/replicated.xml:/etc/clickhouse-server/config.d/replicated.xml:ro {{.IMAGE}}
       - defer: docker rm -f {{.CONTAINER}} >/dev/null
       # Poll instead of sleeping a fixed amount: startup time varies.
       - |

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"testing"
 
@@ -33,6 +34,7 @@ func TestApplyMigrations_FreshDatabase(t *testing.T) {
 
 	cfg := config{
 		database:      database,
+		cluster:       "o11y",
 		migrationsDir: renderedDir,
 	}
 
@@ -49,7 +51,14 @@ func TestApplyMigrations_FreshDatabase(t *testing.T) {
 
 	_, err := bootstrap.Exec("DROP DATABASE IF EXISTS " + quoteIdentifier(database))
 	require.NoError(t, err)
-	_, err = bootstrap.Exec("CREATE DATABASE " + quoteIdentifier(database))
+	// Mirror ensureDatabaseExists: a Replicated database so the migrations'
+	// ReplicatedMergeTree tables (and the migrate tool's own tracking table)
+	// resolve. ON CLUSTER is omitted -- this fixture is a single node, and the
+	// cross-node propagation it drives is validated in staging, not here.
+	_, err = bootstrap.Exec(fmt.Sprintf(
+		"CREATE DATABASE %s ENGINE = Replicated('/clickhouse/%s/databases/%s', '{shard}', '{replica}')",
+		quoteIdentifier(database), cfg.cluster, database,
+	))
 	require.NoError(t, err)
 
 	// ssl_auth.xml's certificate mapping is absent here, so create the users the
@@ -65,12 +74,12 @@ func TestApplyMigrations_FreshDatabase(t *testing.T) {
 	version, dirty, err := applyMigrations(db, cfg)
 	require.NoError(t, err)
 	require.False(t, dirty, "migrations left the database dirty at version %d", version)
-	require.Equal(t, uint(1), version)
+	require.Equal(t, uint(2), version)
 
 	version, dirty, err = applyMigrations(db, cfg)
 	require.NoError(t, err)
 	require.False(t, dirty)
-	require.Equal(t, uint(1), version)
+	require.Equal(t, uint(2), version)
 
 	var count uint64
 	require.NoError(t, db.QueryRow(

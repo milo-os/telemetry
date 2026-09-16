@@ -25,6 +25,7 @@ type config struct {
 	port            string
 	username        string
 	database        string
+	cluster         string
 	migrationsDir   string
 	tlsCertFile     string
 	tlsKeyFile      string
@@ -45,6 +46,7 @@ func configFromEnv() (config, error) {
 		port:            envOr("CLICKHOUSE_PORT", "9440"),
 		username:        os.Getenv("CLICKHOUSE_USER"),
 		database:        os.Getenv("CLICKHOUSE_DATABASE"),
+		cluster:         os.Getenv("CLICKHOUSE_CLUSTER"),
 		migrationsDir:   envOr("MIGRATIONS_DIR", "/migrations"),
 		tlsCertFile:     envOr("CLICKHOUSE_TLS_CERT_FILE", "/etc/clickhouse-client/certs/tls.crt"),
 		tlsKeyFile:      envOr("CLICKHOUSE_TLS_KEY_FILE", "/etc/clickhouse-client/certs/tls.key"),
@@ -58,6 +60,7 @@ func configFromEnv() (config, error) {
 		"CLICKHOUSE_HOST":     c.host,
 		"CLICKHOUSE_USER":     c.username,
 		"CLICKHOUSE_DATABASE": c.database,
+		"CLICKHOUSE_CLUSTER":  c.cluster,
 	} {
 		if v == "" {
 			missing = append(missing, name)
@@ -69,6 +72,12 @@ func configFromEnv() (config, error) {
 
 	if !safeIdentifierRe.MatchString(c.queryapiUser) {
 		return config{}, fmt.Errorf("invalid CLICKHOUSE_QUERYAPI_USER %q: must match %s", c.queryapiUser, safeIdentifierRe.String())
+	}
+
+	// The cluster name is spliced into DDL (ON CLUSTER, the Keeper path), so
+	// hold it to the same identifier-safe shape as the queryapi user.
+	if !safeIdentifierRe.MatchString(c.cluster) {
+		return config{}, fmt.Errorf("invalid CLICKHOUSE_CLUSTER %q: must match %s", c.cluster, safeIdentifierRe.String())
 	}
 
 	return c, nil
@@ -119,7 +128,17 @@ func ensureDatabaseExists(cfg config, tlsConfig *tls.Config) (err error) {
 		err = errors.Join(err, bootstrapDB.Close())
 	}()
 
-	_, err = bootstrapDB.Exec("CREATE DATABASE IF NOT EXISTS " + quoteIdentifier(cfg.database))
+	// Replicated database engine: every DDL statement run against it -- table
+	// creates in the migrations, and the migrate tool's own schema_migrations
+	// table -- is propagated to all replicas via Keeper, so data lands on every
+	// node instead of only the one this Job connects to. {shard}/{replica} are
+	// filled by the Altinity operator's macros. ON CLUSTER creates the database
+	// on all replicas at once; without it only this node would carry it.
+	_, err = bootstrapDB.Exec(fmt.Sprintf(
+		"CREATE DATABASE IF NOT EXISTS %s ON CLUSTER '%s' "+
+			"ENGINE = Replicated('/clickhouse/%s/databases/%s', '{shard}', '{replica}')",
+		quoteIdentifier(cfg.database), cfg.cluster, cfg.cluster, cfg.database,
+	))
 	return err
 }
 
@@ -134,6 +153,12 @@ func applyMigrations(db *sql.DB, cfg config) (uint, bool, error) {
 	driver, err := chmigrate.WithInstance(db, &chmigrate.Config{
 		DatabaseName:    cfg.database,
 		MigrationsTable: cfg.migrationsTable,
+		// A Replicated database rejects non-replicated table engines, so the
+		// tracking table must be ReplicatedMergeTree too; the database then
+		// replicates it like any other table. The driver's own ON CLUSTER
+		// handling stays off -- the Replicated database propagates DDL, and
+		// adding ON CLUSTER on top double-executes it.
+		MigrationsTableEngine: "ReplicatedMergeTree",
 		// ClickHouse rejects multi-statement queries, so the driver must split
 		// migration files on ";" itself. Without this a multi-statement file
 		// fails after migrate flags the version dirty, blocking every later run.
