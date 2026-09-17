@@ -32,7 +32,7 @@ spec:
         fsGroup: 101
     containers:
         - name: client
-          image: clickhouse/clickhouse-server:25.3-alpine
+          image: clickhouse/clickhouse-server:26.1-alpine
           command: ["sleep", "infinity"]
           volumeMounts:
               - name: client-certs

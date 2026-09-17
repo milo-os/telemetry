@@ -28,7 +28,10 @@ CREATE TABLE IF NOT EXISTS logs
            now64(9)),
     ProjectId String MATERIALIZED ResourceAttributes['milo.project.id']
 )
-ENGINE = MergeTree
+-- Replicated so data lands on every replica, not just the node the migration
+-- Job connects to. No engine arguments: inside a Replicated database the Keeper
+-- path and replica name come from the database, filled by the operator's macros.
+ENGINE = ReplicatedMergeTree
 -- Monthly, not daily: N projects x days would explode the partition count.
 -- No TTL here -- retention is the deployment repo's call, not a shared schema's.
 PARTITION BY toYYYYMM(ObservedTimestamp)

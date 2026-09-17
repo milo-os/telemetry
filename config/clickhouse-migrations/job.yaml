@@ -30,6 +30,11 @@ spec:
               value: "clickhouse-migrations-client"
             - name: CLICKHOUSE_DATABASE
               value: "o11y"
+            # The ClickHouseInstallation cluster name. Used for the database's
+            # ON CLUSTER creation and its Keeper path, so DDL replicates to every
+            # node. Must match spec.configuration.clusters[].name in the CHI.
+            - name: CLICKHOUSE_CLUSTER
+              value: "o11y"
             # The ClickHouse username the 000001 migration grants SELECT and
             # row-policy access to. Defaults to the literal "queryapi" this
             # migration was written against; override it if this deployment's
