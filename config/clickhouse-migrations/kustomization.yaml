@@ -11,3 +11,5 @@ configMapGenerator:
       - migrations/000001_init.down.sql
       - migrations/000002_labels_column.up.sql
       - migrations/000002_labels_column.down.sql
+      - migrations/000003_log_retention.up.sql
+      - migrations/000003_log_retention.down.sql
