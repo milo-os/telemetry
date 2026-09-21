@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS logs
 -- path and replica name come from the database, filled by the operator's macros.
 ENGINE = ReplicatedMergeTree
 -- Monthly, not daily: N projects x days would explode the partition count.
--- No TTL here -- retention is the deployment repo's call, not a shared schema's.
+-- Retention TTL is added by migration 000003, not here.
 PARTITION BY toYYYYMM(ObservedTimestamp)
 ORDER BY (ProjectId, ObservedTimestamp, ServiceName);
 
