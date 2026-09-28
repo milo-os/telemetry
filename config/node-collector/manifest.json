@@ -1,0 +1,6 @@
+{
+  "contractVersion": 1,
+  "service": "platform",
+  "collectorVersion": "0.144.0",
+  "pipelines": ["logs/platform"]
+}
