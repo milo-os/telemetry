@@ -10,6 +10,10 @@ directory with its own `go.mod`, and every module exposes its own `task` tasks
 for building, testing, linting, and deploying. The root `Taskfile.yaml` wires
 them together.
 
+The opt-in [shared compute node collector](config/node-collector/README.md)
+lets infra compose provider-owned log pipelines into one node agent. It does
+not change the existing collector deployment.
+
 ## Repository layout
 
 | Path | Module | Description |
