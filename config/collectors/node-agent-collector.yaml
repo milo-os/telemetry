@@ -83,7 +83,7 @@ spec:
         observe_pods: true
         observe_nodes: false
         # This DaemonSet pod's own node -- its hostPath only has that node's logs.
-        node: ${env:K8S_NODE_NAME}
+        node: $${env:K8S_NODE_NAME}
 
     receivers:
       # Catch-all for pods that don't push OTLP natively. Discovers via
