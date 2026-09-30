@@ -22,8 +22,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -34,6 +36,7 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
@@ -447,6 +450,23 @@ func initializeClusterDiscovery(
 	}
 
 	return runnables, provider, nil
+}
+
+const (
+	leaderElectionQPS   = 5
+	leaderElectionBurst = 10
+)
+
+func leaderElectionRestConfig(base *rest.Config) *rest.Config {
+	cfg := rest.CopyConfig(base)
+	cfg.RateLimiter = nil
+	cfg.QPS = leaderElectionQPS
+	cfg.Burst = leaderElectionBurst
+	cfg.Dial = (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	return cfg
 }
 
 func ignoreCanceled(err error) error {
