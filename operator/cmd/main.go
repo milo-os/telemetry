@@ -271,23 +271,14 @@ func main() {
 	}
 
 	mgr, err := mcmanager.New(upstreamClusterConfig, provider, ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
-		WebhookServer:          webhookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "telemetry.miloapis.com",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		Scheme:                        scheme,
+		Metrics:                       metricsServerOptions,
+		WebhookServer:                 webhookServer,
+		HealthProbeBindAddress:        probeAddr,
+		LeaderElection:                enableLeaderElection,
+		LeaderElectionID:              "telemetry.miloapis.com",
+		LeaderElectionConfig:          leaderElectionRestConfig(upstreamClusterConfig),
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -330,28 +321,43 @@ func main() {
 	}
 
 	ctx := ctrl.SetupSignalHandler()
-	g, ctx := errgroup.WithContext(ctx)
 
+	workers := make([]func(context.Context) error, 0, len(runnables)+1)
 	for _, runnable := range runnables {
-		g.Go(func() error {
-			return ignoreCanceled(runnable.Start(ctx))
-		})
+		workers = append(workers, runnable.Start)
 	}
-
-	setupLog.Info("starting cluster discovery provider")
-	g.Go(func() error {
-		return ignoreCanceled(provider.Run(ctx, mgr))
+	workers = append(workers, func(ctx context.Context) error {
+		return provider.Run(ctx, mgr)
 	})
 
-	setupLog.Info("starting multicluster manager")
-	g.Go(func() error {
-		return ignoreCanceled(mgr.Start(ctx))
-	})
-
-	if err := g.Wait(); err != nil {
+	setupLog.Info("starting cluster discovery provider and multicluster manager")
+	if err := runUntilManagerStops(ctx, mgr.Start, workers...); err != nil {
 		setupLog.Error(err, "unable to start")
 		os.Exit(1)
 	}
+}
+
+func runUntilManagerStops(
+	ctx context.Context,
+	startManager func(context.Context) error,
+	workers ...func(context.Context) error,
+) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	g, ctx := errgroup.WithContext(ctx)
+
+	for _, work := range workers {
+		g.Go(func() error {
+			return ignoreCanceled(work(ctx))
+		})
+	}
+
+	g.Go(func() error {
+		defer cancel()
+		return ignoreCanceled(startManager(ctx))
+	})
+
+	return g.Wait()
 }
 
 type runnableProvider interface {
