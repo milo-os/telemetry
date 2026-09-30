@@ -95,6 +95,13 @@ with `IMAGE_NAME`/`IMAGE_TAG`, e.g.:
 task operator:deploy IMAGE_NAME=ghcr.io/milo-os/telemetry IMAGE_TAG=<tag>
 ```
 
+**Running more than one replica:** with `--leader-elect`, only the leader
+runs the `ExportPolicy` controller, but project discovery and the cluster
+provider run on every replica. A standby therefore holds about the same memory
+and opens about the same API server watches as the leader. The leader releases
+its lease when it shuts down, so a rollout or drain hands over without waiting
+for the lease to expire.
+
 **Apply a sample `ExportPolicy`:**
 
 ```sh
