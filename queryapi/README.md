@@ -166,13 +166,13 @@ and nothing for queryapi to get wrong.
 
 **There are two gates, and a caller needs a grant at each.** Milo's aggregator
 authorizes the proxy hop before queryapi ever sees the request, deriving
-attributes from the path with the stock Kubernetes resolver. Every Loki route is
-a `GET` under `.../logs/loki/...`, so all of them render identically as `get` on
-`logs`; the aggregator cannot tell them apart, and `o11y.miloapis.com/logs.get`
-therefore means only "may reach the log API". `metrics.get` is the same for
-metrics. Without it the request is refused at the proxy with a `Forbidden`
-naming a resource nobody declared, and queryapi records nothing -- it never
-arrived.
+attributes from the path with the stock Kubernetes resolver. With subresource
+checks enabled, the Loki query paths under `.../logs/loki/api/...` require
+`o11y.miloapis.com/logs/api.get`; Prometheus paths under
+`.../metrics/api/...` require `o11y.miloapis.com/metrics/api.get`. The
+collection-level `logs.get` and `metrics.get` permissions remain for
+compatibility while subresource checks are disabled. Without the matching grant,
+the request is refused at the proxy and queryapi never sees it.
 
 What queryapi supplies is the vocabulary that gate cannot express. Its own
 `RequestInfoResolver` runs after the hop, where the route is known, and maps
@@ -189,10 +189,12 @@ each one onto a specific permission:
 
 `query` returns log lines or samples; the `get*` actions return only metadata
 about them, which is a separate boundary because label values carry pod names,
-hostnames and customer identifiers. All six, plus the two coarse `get`
-permissions above, are granted by the `telemetry.miloapis.com-viewer` role
-([`config/operator/iam/`](../config/operator/iam/)). The metrics routes return
-501 today and are gated anyway, so they cannot ship unguarded.
+hostnames and customer identifiers. The `telemetry.miloapis.com-viewer` role
+([`config/operator/iam/`](../config/operator/iam/)) grants both the queryapi
+route permissions and the proxy permissions (`logs/api.get` and
+`metrics/api.get`), while retaining the collection-level grants for compatibility.
+The metrics routes return 501 today and are gated anyway, so they cannot ship
+unguarded.
 
 The split is only enforceable here, not at the aggregator, so a metadata-only
 role depends on queryapi's check holding rather than on Milo refusing the
