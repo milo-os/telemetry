@@ -14,15 +14,16 @@ spec:
   permissions:
     # Keep the collection-level permission for compatibility while subresource
     # checks are disabled. The aggregator parses Prometheus routes under
-    # /metrics/api/... as the `api` subresource when checks are enabled.
+    # /metrics/api/v1/... as the `v1` subresource when checks are enabled.
     - get
     - query
     - getLabels
     - getSeries
   subresources:
-    - name: api
+    - name: v1
       permissions:
         - get
+        - create
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

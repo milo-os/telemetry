@@ -169,9 +169,10 @@ authorizes the proxy hop before queryapi ever sees the request, deriving
 attributes from the path with the stock Kubernetes resolver. With subresource
 checks enabled, the Loki query paths under `.../logs/loki/api/...` require
 `o11y.miloapis.com/logs/api.get`; Prometheus paths under
-`.../metrics/api/...` require `o11y.miloapis.com/metrics/api.get`. The
-collection-level `logs.get` and `metrics.get` permissions remain for
-compatibility while subresource checks are disabled. Without the matching grant,
+`.../metrics/api/v1/...` require `o11y.miloapis.com/metrics/v1.get`, or
+`metrics/v1.create` for `POST`. With subresource checks disabled the aggregator
+asks for `logs.get` and `metrics.get` instead, but a role granting subresource
+permissions is then invalid, so it grants nothing. Without the matching grant,
 the request is refused at the proxy and queryapi never sees it.
 
 What queryapi supplies is the vocabulary that gate cannot express. Its own
@@ -191,8 +192,8 @@ each one onto a specific permission:
 about them, which is a separate boundary because label values carry pod names,
 hostnames and customer identifiers. The `telemetry.miloapis.com-viewer` role
 ([`config/operator/iam/`](../config/operator/iam/)) grants both the queryapi
-route permissions and the proxy permissions (`logs/api.get` and
-`metrics/api.get`), while retaining the collection-level grants for compatibility.
+route permissions and the proxy permissions (`logs/api.get`, `metrics/v1.get`
+and `metrics/v1.create`).
 The metrics routes return 501 today and are gated anyway, so they cannot ship
 unguarded.
 

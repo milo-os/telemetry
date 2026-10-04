@@ -11,13 +11,12 @@ spec:
     - telemetry.miloapis.com/exportpolicies.list
     - telemetry.miloapis.com/exportpolicies.get
     - telemetry.miloapis.com/exportpolicies.watch
-    # The collection-level grants preserve access while subresource checks are
-    # disabled. When enabled, Milo's aggregator also requires the `api`
-    # subresource permission for the Loki and Prometheus query paths.
+    # Subresource grants invalidate this role if subresource checks are off.
     - o11y.miloapis.com/logs.get
     - o11y.miloapis.com/metrics.get
     - o11y.miloapis.com/logs/api.get
-    - o11y.miloapis.com/metrics/api.get
+    - o11y.miloapis.com/metrics/v1.get
+    - o11y.miloapis.com/metrics/v1.create
     # query returns log lines or samples; the get* actions return only metadata
     # about them.
     - o11y.miloapis.com/logs.query
