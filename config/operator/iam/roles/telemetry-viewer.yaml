@@ -11,11 +11,13 @@ spec:
     - telemetry.miloapis.com/exportpolicies.list
     - telemetry.miloapis.com/exportpolicies.get
     - telemetry.miloapis.com/exportpolicies.watch
-    # Reading telemetry itself. Two gates: `get` is what Milo's aggregator
-    # asks for to allow the proxy hop at all -- it cannot tell the routes
-    # apart -- and the rest are queryapi's own, per route. A caller needs both.
+    # The collection-level grants preserve access while subresource checks are
+    # disabled. When enabled, Milo's aggregator also requires the `api`
+    # subresource permission for the Loki and Prometheus query paths.
     - o11y.miloapis.com/logs.get
     - o11y.miloapis.com/metrics.get
+    - o11y.miloapis.com/logs/api.get
+    - o11y.miloapis.com/metrics/api.get
     # query returns log lines or samples; the get* actions return only metadata
     # about them.
     - o11y.miloapis.com/logs.query

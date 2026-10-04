@@ -12,14 +12,17 @@ spec:
   plural: metrics
   singular: metric
   permissions:
-    # Milo's aggregator authorizes the proxy hop with the stock path parse, so
-    # every metrics route renders as `get` on `metrics`. It means "may reach
-    # the metrics API"; the actions below are queryapi's own, per route. See
-    # the logs ProtectedResource for the full explanation.
+    # Keep the collection-level permission for compatibility while subresource
+    # checks are disabled. The aggregator parses Prometheus routes under
+    # /metrics/api/... as the `api` subresource when checks are enabled.
     - get
     - query
     - getLabels
     - getSeries
+  subresources:
+    - name: api
+      permissions:
+        - get
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project

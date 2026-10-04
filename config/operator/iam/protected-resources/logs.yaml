@@ -15,11 +15,9 @@ spec:
     # Two gates, both SubjectAccessReviews against this IAM, and a caller needs
     # a grant at each.
     #
-    # `get` is the one Milo's aggregator asks for. It authorizes the proxy hop
-    # itself, deriving attributes from the request path with the stock
-    # Kubernetes resolver: every Loki route is a GET under .../logs/loki/...,
-    # so all of them render as `get` on `logs` no matter which route they are.
-    # It cannot distinguish them, so it means only "may reach the log API".
+    # Keep the collection-level permission for compatibility while subresource
+    # checks are disabled. The aggregator parses Loki routes under
+    # /logs/loki/api/... as the `api` subresource when checks are enabled.
     - get
     # The actions below are queryapi's own, asked after the proxy hop, where
     # the route is known. query returns log lines; the get* actions return only
@@ -30,6 +28,10 @@ spec:
     - query
     - getLabels
     - getSeries
+  subresources:
+    - name: api
+      permissions:
+        - get
   parentResources:
     - apiGroup: resourcemanager.miloapis.com
       kind: Project
