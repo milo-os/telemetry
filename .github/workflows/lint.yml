@@ -19,6 +19,7 @@ jobs:
           - exporter/natsexporter
           - processor/unbatchprocessor
           - queryapi
+          - cli
     steps:
       - name: Clone the code
         uses: actions/checkout@v4

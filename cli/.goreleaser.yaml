@@ -1,0 +1,46 @@
+# GoReleaser config for the milo-telemetry datumctl plugin. Run from cli/ by
+# .github/workflows/release-plugin.yaml on every published release.
+#
+# The plugin catalog entries reference these exact asset names, so the archive
+# name_template must not change casually.
+#
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: milo-telemetry
+
+builds:
+  - id: milo-telemetry
+    main: ./cmd/milo-telemetry
+    binary: milo-telemetry
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.pluginVersion={{ .Version }}
+
+archives:
+  - id: milo-telemetry
+    # milo-telemetry_Darwin_arm64, milo-telemetry_Linux_x86_64, ...
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+# Attach to the release that triggered the run; the repo's other release
+# artifacts are container images, so there is nothing to clobber.
+release:
+  mode: append
+
+changelog:
+  disable: true

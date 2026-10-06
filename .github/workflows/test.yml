@@ -27,6 +27,8 @@ jobs:
             test-cmd: go test ./...
           - module: queryapi
             test-cmd: task test
+          - module: cli
+            test-cmd: go test -race ./...
     steps:
       - name: Clone the code
         uses: actions/checkout@v4
