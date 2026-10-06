@@ -5,6 +5,7 @@ package clickhouse
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"go.datum.net/o11y/queryapi/internal/logql"
 	"go.datum.net/o11y/queryapi/internal/storage"
@@ -26,8 +27,31 @@ const logsSelect = "ObservedTimestamp, Body, ServiceName, SeverityText, TraceId,
 // projectRange returns the WHERE fragments and args that scope a query to one
 // project over the half-open interval [Start, End), enforced as a partitioned
 // prefix. Everything else in the query layer appends to this.
+//
+// The bounds are bound as integer nanoseconds. clickhouse-go formats a bound
+// time.Time as toDateTime('<unix seconds>'), which drops the fraction, so a
+// window inside one second matched the whole second or nothing (#197).
 func projectRange(project string, tr storage.TimeRange) (string, []any) {
-	return "ProjectId = ? AND ObservedTimestamp >= ? AND ObservedTimestamp < ?", []any{project, tr.Start, tr.End}
+	return "ProjectId = ? AND ObservedTimestamp >= fromUnixTimestamp64Nano(?) AND ObservedTimestamp < fromUnixTimestamp64Nano(?)",
+		[]any{project, unixNano(tr.Start), unixNano(tr.End)}
+}
+
+// The DateTime64(9) range. Nothing can be stored outside it, so clamping a
+// bound to it changes no result, and it keeps UnixNano, which is undefined
+// outside 1678-2262, from wrapping on a bound such as year 1 or 9999.
+var (
+	minTimestamp = time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)
+	maxTimestamp = time.Date(2262, 4, 11, 23, 47, 16, 0, time.UTC)
+)
+
+func unixNano(t time.Time) int64 {
+	switch {
+	case t.Before(minTimestamp):
+		t = minTimestamp
+	case t.After(maxTimestamp):
+		t = maxTimestamp
+	}
+	return t.UnixNano()
 }
 
 // buildLogsQuery translates a parsed LogQL query into SELECT ... over the

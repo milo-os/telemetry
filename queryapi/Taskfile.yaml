@@ -25,7 +25,12 @@ tasks:
       PORT: 19001
     cmds:
       - docker rm -f {{.CONTAINER}} >/dev/null 2>&1 || true
-      - docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -p {{.PORT}}:9000 {{.IMAGE}}
+      # custom-settings.xml registers the telemetry_ prefix, as production's
+      # ClickHouse config does; the store's telemetry_project_id needs it.
+      - >-
+        docker run -d --name {{.CONTAINER}} -e CLICKHOUSE_PASSWORD={{.PASSWORD}} -p {{.PORT}}:9000
+        -v "{{.TASKFILE_DIR}}/internal/storage/clickhouse/testdata/custom-settings.xml:/etc/clickhouse-server/config.d/custom-settings.xml:ro"
+        {{.IMAGE}}
       - defer: docker rm -f {{.CONTAINER}} >/dev/null
       - |
         for i in $(seq 1 60); do
