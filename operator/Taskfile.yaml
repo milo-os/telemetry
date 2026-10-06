@@ -147,13 +147,9 @@ tasks:
         set -e
         command -v kind >/dev/null 2>&1 || { echo "Kind is not installed. Please install Kind manually."; exit 1; }
         kind get clusters | grep -q 'kind' || { echo "No Kind cluster is running. Please start a Kind cluster before running the e2e tests."; exit 1; }
-        # The e2e suite installs cert-manager/prometheus via kubectl, which goes
-        # to the current context. Pin it to the Kind cluster so the tests never
-        # accidentally hit a real cluster (e.g. a GKE context with expired
-        # gcloud creds), then restore the caller's context afterwards.
-        PREV_CONTEXT="$(kubectl config current-context 2>/dev/null || true)"
-        kubectl config use-context kind-kind >/dev/null
-        trap 'kubectl config use-context "$PREV_CONTEXT" >/dev/null 2>&1 || true' EXIT
+        # The suite points kubectl at a private kubeconfig for the Kind cluster
+        # itself (utils.IsolateKubeconfig), so it neither reads nor changes the
+        # shared current context, which another process can switch mid-run.
         go test ./test/e2e/ -v -ginkgo.v
 
   lint:

@@ -48,6 +48,11 @@ var (
 	// projectImage is the name of the image which will be build and loaded with
 	// the code source changes to be tested.
 	projectImage = "example.com/telemetry-services-operator:v0.0.1"
+	// cleanupKubeconfig removes the suite's private kubeconfig. It is nil until
+	// IsolateKubeconfig succeeds, and teardown runs only once it has: without
+	// the private kubeconfig, kubectl would reach whatever cluster the shared
+	// kubeconfig names (#201).
+	cleanupKubeconfig func()
 )
 
 // taskImageVars splits "repo:tag" into the IMAGE_NAME/IMAGE_TAG task
@@ -72,9 +77,15 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// First, before anything runs kubectl.
+	By("isolating kubectl to the Kind cluster")
+	cleanup, err := utils.IsolateKubeconfig()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to isolate kubectl to the Kind cluster")
+	cleanupKubeconfig = cleanup
+
 	By("building the manager(Operator) image")
 	cmd := exec.Command("task", append([]string{"docker-build"}, taskImageVars(projectImage)...)...)
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 
 	// TODO(user): If you want to change the e2e test vendor from Kind, ensure the
@@ -118,6 +129,12 @@ var _ = BeforeSuite(func() {
 })
 
 var _ = AfterSuite(func() {
+	if cleanupKubeconfig == nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping teardown: kubectl was never isolated to the Kind cluster\n")
+		return
+	}
+	defer cleanupKubeconfig()
+
 	// Teardown CertManager after the suite if not skipped and if it was not
 	// already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {

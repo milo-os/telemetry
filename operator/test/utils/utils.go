@@ -20,6 +20,8 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -209,12 +211,91 @@ func IsCertManagerCRDsInstalled() bool {
 	return false
 }
 
+// kindCluster is the Kind cluster the suite runs against: KIND_CLUSTER, or
+// "kind", the name `kind create cluster` uses.
+func kindCluster() string {
+	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
+		return v
+	}
+	return "kind"
+}
+
+// IsolateKubeconfig points every later kubectl, task and kind command in this
+// process at a private kubeconfig for the Kind cluster, and returns a func that
+// removes it.
+//
+// The suite runs bare kubectl, which reads the current context from the
+// kubeconfig. The shared ~/.kube/config is not the suite's to rely on: any
+// other process can change its current context mid-run, and on 2026-10-06 one
+// did, so the teardown ran against a production cluster (#201). A private file
+// named by KUBECONFIG cannot be changed by anything else. Children inherit it
+// from the environment, which Run and every bare exec.Command pass on.
+//
+// It refuses unless the kubeconfig's API server is on loopback, where Kind
+// serves it, so a misnamed cluster or a remote Docker host fails here rather
+// than at teardown.
+func IsolateKubeconfig() (func(), error) {
+	cluster := kindCluster()
+	raw, err := exec.Command("kind", "get", "kubeconfig", "--name", cluster).Output()
+	if err != nil {
+		return nil, fmt.Errorf("getting the kubeconfig for Kind cluster %q: %w", cluster, err)
+	}
+	f, err := os.CreateTemp("", "e2e-kubeconfig-*")
+	if err != nil {
+		return nil, err
+	}
+	path := f.Name()
+	cleanup := func() { _ = os.Remove(path) }
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		cleanup()
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return nil, err
+	}
+
+	// Read the server from the file itself, not the environment's kubeconfig.
+	cmd := exec.Command("kubectl", "config", "view", "--minify", "-o", "jsonpath={.clusters[0].cluster.server}")
+	cmd.Env = append(os.Environ(), "KUBECONFIG="+path)
+	server, err := cmd.Output()
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("reading the API server from the Kind kubeconfig: %w", err)
+	}
+	if err := RequireLoopbackServer(strings.TrimSpace(string(server))); err != nil {
+		cleanup()
+		return nil, err
+	}
+
+	if err := os.Setenv("KUBECONFIG", path); err != nil {
+		cleanup()
+		return nil, err
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "using private kubeconfig %s for Kind cluster %q (%s)\n",
+		path, cluster, strings.TrimSpace(string(server)))
+	return cleanup, nil
+}
+
+// RequireLoopbackServer returns an error unless server is an API server URL on
+// a loopback address.
+func RequireLoopbackServer(server string) error {
+	u, err := url.Parse(server)
+	if err != nil || u.Hostname() == "" {
+		return fmt.Errorf("refusing to run: cannot read an API server host from %q", server)
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("refusing to run: the e2e suite creates and deletes cluster-wide resources, "+
+		"and its API server %s is not on loopback, so it is not a local Kind cluster", server)
+}
+
 // LoadImageToKindClusterWithName loads a local docker image to the kind cluster
 func LoadImageToKindClusterWithName(name string) error {
-	cluster := "kind"
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
-	}
+	cluster := kindCluster()
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)
