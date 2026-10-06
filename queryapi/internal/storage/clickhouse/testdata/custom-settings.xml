@@ -1,0 +1,9 @@
+<!--
+  Registers the telemetry_ prefix so the store's per-query
+  telemetry_project_id setting is accepted, as production's ClickHouse config
+  does (datum-cloud/infra apps/o11y-system/clickhouse/base). Without it the
+  server rejects the setting as UNKNOWN_SETTING.
+-->
+<clickhouse>
+    <custom_settings_prefixes>telemetry_</custom_settings_prefixes>
+</clickhouse>

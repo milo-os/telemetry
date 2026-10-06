@@ -4,7 +4,10 @@ package clickhouse
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -17,8 +20,9 @@ import (
 )
 
 // logsDDL mirrors config/clickhouse-migrations/migrations/000001_init.up.sql
-// so an integration test can build the exact production schema without
-// reaching across module boundaries for the migration file.
+// plus 000002_labels_column.up.sql's Labels column, so an integration test can
+// build the production schema without reaching across module boundaries for
+// the migration files. The store reads Labels, so a copy without it fails.
 const logsDDL = `
 CREATE TABLE logs
 (
@@ -39,7 +43,8 @@ CREATE TABLE logs
     ScopeAttributes Map(String, String),
     LogAttributes Map(String, String),
     EventName String,
-    ProjectId String MATERIALIZED ResourceAttributes['milo.project.id']
+    ProjectId String MATERIALIZED ResourceAttributes['milo.project.id'],
+    Labels Map(String, String) MATERIALIZED mapConcat(mapApply((k, v) -> (replaceAll(k, '.', '_'), v), LogAttributes), mapApply((k, v) -> (replaceAll(k, '.', '_'), v), ResourceAttributes))
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(ObservedTimestamp)
@@ -76,12 +81,9 @@ func TestStoreAgainstClickHouse(t *testing.T) {
 	}
 
 	// The store sends the per-query custom setting telemetry_project_id (see
-	// projectContext); grant the connecting user custom-setting rights, as the
-	// queryapi user is granted in production and in the migrate test.
-	if err := boot.Exec(context.Background(),
-		"GRANT settings_allow_custom_setting_read, settings_allow_custom_setting_write ON *.* TO "+opts.Auth.Username); err != nil {
-		t.Fatalf("grant custom settings: %v", err)
-	}
+	// projectContext). The server accepts it only because the container mounts
+	// testdata/custom-settings.xml, which registers the telemetry_ prefix as
+	// production's config does. No GRANT is involved.
 
 	scoped := *opts
 	scoped.Auth.Database = database
@@ -110,6 +112,7 @@ func TestStoreAgainstClickHouse(t *testing.T) {
 	runLabelValues(t, store, ctx, ran)
 	runResourceOnlyLabelRoundTrip(t, store, ctx, ran)
 	runSeries(t, store, ctx, ran)
+	runSubsecondWindows(t, conn, store, base)
 
 	// Tenancy holds even against a live server.
 	if _, err := store.LabelNames(context.Background(), ran); err != storage.ErrNoProject {
@@ -136,6 +139,109 @@ func insertRows(t *testing.T, conn driver.Conn, base time.Time) {
 		); err != nil {
 			t.Fatalf("insert row %d: %v", i, err)
 		}
+	}
+}
+
+// runSubsecondWindows checks that window bounds keep their sub-second part.
+// Bound as time.Time, the driver formats them as toDateTime('<seconds>'), so a
+// window inside one second matched the whole second or nothing (issue #197).
+// The rows live in their own project so the other checks' counts hold.
+func runSubsecondWindows(t *testing.T, conn driver.Conn, store *Store, base time.Time) {
+	t.Helper()
+	// The timestamps go in as integer nanoseconds: a time.Time bound here would
+	// be rounded to the second just like the query bounds, and the windows
+	// below would test nothing.
+	const insert = "INSERT INTO logs (Timestamp, ObservedTimestamp, ServiceName, Body, ResourceAttributes) " +
+		"VALUES (fromUnixTimestamp64Nano(?), fromUnixTimestamp64Nano(?), ?, ?, ?)"
+	for _, ms := range []int{50, 150, 250} {
+		at := base.Add(time.Duration(ms) * time.Millisecond).UnixNano()
+		svc := fmt.Sprintf("at-%dms", ms)
+		if err := conn.Exec(context.Background(), insert, at, at, svc, svc,
+			map[string]string{"milo.project.id": "proj-sub"}); err != nil {
+			t.Fatalf("insert %s: %v", svc, err)
+		}
+	}
+	rows, err := conn.Query(context.Background(),
+		"SELECT ObservedTimestamp FROM logs WHERE ProjectId = 'proj-sub' ORDER BY ObservedTimestamp")
+	if err != nil {
+		t.Fatalf("read back timestamps: %v", err)
+	}
+	var stored []time.Time
+	for rows.Next() {
+		var ts time.Time
+		if err := rows.Scan(&ts); err != nil {
+			t.Fatalf("read back timestamps: %v", err)
+		}
+		stored = append(stored, ts)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatalf("read back timestamps: %v", err)
+	}
+	for i, ms := range []int{50, 150, 250} {
+		if want := base.Add(time.Duration(ms) * time.Millisecond); i >= len(stored) || !stored[i].Equal(want) {
+			t.Fatalf("stored timestamps = %v, want %d ms past %v", stored, ms, base)
+		}
+	}
+	ctx := miloauth.WithProject(context.Background(), "proj-sub")
+	window := func(from, to int) storage.TimeRange {
+		return storage.TimeRange{Start: base.Add(time.Duration(from) * time.Millisecond), End: base.Add(time.Duration(to) * time.Millisecond)}
+	}
+
+	for _, tt := range []struct {
+		name     string
+		from, to int
+		want     []string
+	}{
+		{"inside one second", 100, 200, []string{"at-150ms"}},
+		{"start inclusive, end exclusive", 150, 250, []string{"at-150ms"}},
+		{"between rows", 160, 240, nil},
+		{"whole second", 0, 1000, []string{"at-50ms", "at-150ms", "at-250ms"}},
+	} {
+		q := parse(t, `{service_name=~"at-.+"}`)
+		iter, err := store.QueryLogs(ctx, storage.LogQuery{
+			Matchers: q.Matchers, Range: window(tt.from, tt.to),
+			Limit: 10, Direction: storage.DirectionForward,
+		})
+		if err != nil {
+			t.Fatalf("QueryLogs %s: %v", tt.name, err)
+		}
+		var got []string
+		for iter.Next() {
+			got = append(got, iter.Row().Line)
+		}
+		if err := errors.Join(iter.Err(), iter.Close()); err != nil {
+			t.Fatalf("QueryLogs %s: %v", tt.name, err)
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("QueryLogs [+%dms, +%dms) = %v, want %v", tt.from, tt.to, got, tt.want)
+		}
+
+		// Label values share the same window clause.
+		values, err := store.LabelValues(ctx, "service_name", window(tt.from, tt.to))
+		if err != nil {
+			t.Fatalf("LabelValues %s: %v", tt.name, err)
+		}
+		want := slices.Clone(tt.want)
+		slices.Sort(want)
+		slices.Sort(values)
+		if !slices.Equal(values, want) {
+			t.Errorf("LabelValues [+%dms, +%dms) = %v, want %v", tt.from, tt.to, values, want)
+		}
+	}
+
+	// Bounds outside DateTime64(9)'s range are clamped to it; the server must
+	// accept the clamped values and return everything.
+	wide := storage.TimeRange{
+		Start: time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:   time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC),
+	}
+	values, err := store.LabelValues(ctx, "service_name", wide)
+	if err != nil {
+		t.Fatalf("LabelValues over years 1-9999: %v", err)
+	}
+	slices.Sort(values)
+	if want := []string{"at-150ms", "at-250ms", "at-50ms"}; !slices.Equal(values, want) {
+		t.Errorf("LabelValues over years 1-9999 = %v, want %v", values, want)
 	}
 }
 

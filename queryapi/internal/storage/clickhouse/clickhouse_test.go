@@ -120,8 +120,8 @@ func TestBuildLogsQueryTranslation(t *testing.T) {
 	for _, want := range []string{
 		"SELECT " + logsSelect + " FROM logs",
 		"ProjectId = ?",
-		"ObservedTimestamp >= ?",
-		"ObservedTimestamp < ?",
+		"ObservedTimestamp >= fromUnixTimestamp64Nano(?)",
+		"ObservedTimestamp < fromUnixTimestamp64Nano(?)",
 		"ServiceName = ?",
 		"(SeverityText != ?)",
 		"position(Body, ?) > 0",
@@ -395,6 +395,34 @@ func TestInternalAttributesAreNotLabels(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("withoutInternalAttributes[%d] = %q, want %q", i, got[i], want[i])
 		}
+	}
+}
+
+// The window is bound as integer nanoseconds. A time.Time arg is formatted by
+// clickhouse-go as toDateTime('<unix seconds>'), losing the fraction (#197).
+// The integration test proves the SQL; this keeps CI, which skips it, from
+// passing a return to time.Time args.
+func TestProjectRangeBindsNanoseconds(t *testing.T) {
+	start := time.Date(2025, 6, 1, 12, 0, 0, 100_000_000, time.UTC)
+	end := start.Add(100 * time.Millisecond)
+	_, args := projectRange("p", storage.TimeRange{Start: start, End: end})
+	if len(args) != 3 || args[1] != start.UnixNano() || args[2] != end.UnixNano() {
+		t.Errorf("projectRange args = %#v, want project then int64 nanoseconds %d, %d", args, start.UnixNano(), end.UnixNano())
+	}
+}
+
+// Bounds outside DateTime64(9)'s range clamp to it rather than wrapping:
+// UnixNano is undefined outside 1678-2262.
+func TestProjectRangeClampsUnrepresentableBounds(t *testing.T) {
+	_, args := projectRange("p", storage.TimeRange{
+		Start: time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC),
+		End:   time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC),
+	})
+	if args[1] != minTimestamp.UnixNano() || args[2] != maxTimestamp.UnixNano() {
+		t.Errorf("projectRange args = %v, want the DateTime64(9) range [%d, %d]", args[1:], minTimestamp.UnixNano(), maxTimestamp.UnixNano())
+	}
+	if args[1].(int64) >= args[2].(int64) {
+		t.Error("clamped window is empty or inverted")
 	}
 }
 
