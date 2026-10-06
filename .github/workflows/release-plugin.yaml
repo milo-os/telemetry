@@ -1,0 +1,66 @@
+name: Release Plugin
+
+# Builds the milo-telemetry datumctl plugin (cli/) on every published release,
+# tags the cli module so Go consumers can depend on it, and opens a catalog PR.
+
+on:
+  release:
+    types: ["published"]
+
+jobs:
+  publish-plugin:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/go.mod
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          workdir: cli
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # cli/ is its own module, so `go get go.miloapis.com/telemetry/cli@vX.Y.Z`
+      # resolves the tag cli/vX.Y.Z, not vX.Y.Z.
+      - name: Tag the cli module
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          git tag "cli/${TAG}" "${GITHUB_SHA}"
+          git push origin "cli/${TAG}"
+
+  # Mint and use the App token in one job: a masked token passed between jobs
+  # via outputs arrives empty.
+  update-plugin-index:
+    needs: [publish-plugin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint catalog token from the milo-os GitHub App
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.PLUGIN_INDEX_APP_ID }}
+          private-key: ${{ secrets.PLUGIN_INDEX_APP_PRIVATE_KEY }}
+          owner: milo-os
+          repositories: cli-plugins
+
+      - name: Open the catalog PR
+        uses: datum-cloud/actions/update-plugin-index@v1.18.0
+        with:
+          index-repo: milo-os/cli-plugins
+          plugin-name: telemetry
+          version: ${{ github.event.release.tag_name }}
+          token: ${{ steps.app-token.outputs.token }}

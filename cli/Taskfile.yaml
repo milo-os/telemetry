@@ -1,0 +1,32 @@
+version: '3'
+
+# The datumctl plugin SDK needs Go 1.25.8, newer than the repo-wide go1.25.0
+# pin. CI reads this module's go.mod. A Taskfile-level env loses to the root
+# Taskfile's, so each task sets it.
+vars:
+  GOTOOLCHAIN: go1.25.8
+
+tasks:
+  tidy:
+    desc: Run go mod tidy (mirrors CI)
+    env: {GOTOOLCHAIN: '{{.GOTOOLCHAIN}}'}
+    cmds:
+      - go mod tidy
+
+  build:
+    desc: Build the milo-telemetry datumctl plugin
+    env: {GOTOOLCHAIN: '{{.GOTOOLCHAIN}}'}
+    cmds:
+      - CGO_ENABLED=0 go build -o bin/milo-telemetry ./cmd/milo-telemetry
+
+  test:
+    desc: Run Go tests
+    env: {GOTOOLCHAIN: '{{.GOTOOLCHAIN}}'}
+    cmds:
+      - go test -race ./...
+
+  lint:
+    desc: Run golangci-lint (assumes it's installed on PATH)
+    env: {GOTOOLCHAIN: '{{.GOTOOLCHAIN}}'}
+    cmds:
+      - golangci-lint run --no-config
