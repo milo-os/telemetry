@@ -75,6 +75,9 @@ func TestNATSSubjectsArePoPScoped(t *testing.T) {
 							Logs struct {
 								Subject string `yaml:"subject"`
 							} `yaml:"logs"`
+							Traces struct {
+								Subject string `yaml:"subject"`
+							} `yaml:"traces"`
 						} `yaml:"nats"`
 					} `yaml:"exporters"`
 				} `yaml:"config"`
@@ -108,6 +111,11 @@ func TestNATSSubjectsArePoPScoped(t *testing.T) {
 		// The static fallback has to satisfy the same grant.
 		if got := doc.Spec.Config.Exporters.NATS.Logs.Subject; !strings.Contains(got, "${cluster}") {
 			t.Errorf("%s: nats exporter fallback subject %q omits the cluster token", path, got)
+		}
+		if path == "collectors/gateway-collector.yaml" {
+			if got := doc.Spec.Config.Exporters.NATS.Traces.Subject; got != "o11y.traces.${cluster}.internal" {
+				t.Errorf("%s: trace subject %q is outside the edge grant or hub consumer", path, got)
+			}
 		}
 	}
 }
