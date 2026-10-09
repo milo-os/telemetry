@@ -120,9 +120,9 @@ task operator:uninstall  # remove the CRDs
 `config/collectors/` holds the OpenTelemetryCollector CRs that run on the custom
 `o11y/otelcol` distribution:
 
-- `gateway-collector` (deployment) — centralized OTLP push receiver, publishes logs to NATS.
+- `gateway-collector` (deployment) — centralized OTLP push receiver, publishes logs and traces to NATS.
 - `node-agent-collector` (daemonset) — node-local agent that tails pod logs and publishes to NATS.
-- `o11y-sink-collector` (hub-side deployment) — reads the hub NATS JetStream consumer and writes logs to ClickHouse.
+- `o11y-sink-collector` (hub-side deployment) — reads separate hub NATS consumers, writes logs to ClickHouse and traces to Tempo.
 
 The collector image tags are stamped at publish time by the release workflow (see
 below); the in-repo manifests carry a `v0.0.0-dev` placeholder.

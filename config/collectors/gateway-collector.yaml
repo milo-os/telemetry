@@ -172,6 +172,9 @@ spec:
           # Fallback only; must match the leaf's grant like the attribute does.
           subject: o11y.logs.${cluster}.internal
           encoding: otlp_proto
+        traces:
+          subject: o11y.traces.${cluster}.internal
+          encoding: otlp_proto
 
       debug:
         verbosity: basic
@@ -184,3 +187,7 @@ spec:
           receivers: [otlp]
           processors: [memory_limiter, transform/observed_time, groupbyattrs, k8sattributes, resource, transform/milo_project_id, batch, unbatch]
           exporters: [nats, debug]
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource, batch, unbatch]
+          exporters: [nats]
