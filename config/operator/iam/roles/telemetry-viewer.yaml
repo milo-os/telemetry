@@ -10,6 +10,7 @@ spec:
   includedPermissions:
     - telemetry.miloapis.com/exportpolicies.list
     - telemetry.miloapis.com/exportpolicies.get
+    - telemetry.miloapis.com/exportpolicies/status.get
     - telemetry.miloapis.com/exportpolicies.watch
     # Subresource grants invalidate this role if subresource checks are off.
     - o11y.miloapis.com/logs.get
