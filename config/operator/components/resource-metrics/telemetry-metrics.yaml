@@ -32,7 +32,7 @@ spec:
           help: "Unix creation timestamp of each ExportPolicy resource."
           type: gauge
           metrics:
-            - value: "double(timestamp(object.metadata.creationTimestamp).getSeconds())"
+            - value: "double(int(timestamp(object.metadata.creationTimestamp)))"
               labels:
                 - name: name
                   value: "object.metadata.name"
