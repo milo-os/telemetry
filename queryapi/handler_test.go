@@ -63,7 +63,7 @@ func TestHandlersConformToSpec(t *testing.T) {
 	router := loadSpec(t)
 
 	cfg := queryapi.DefaultConfig()
-	srv := serve(t, fake.New(2), cfg, allowAll())
+	srv := serve(t, fake.NewLogStore(2), cfg, allowAll())
 
 	cases := []struct {
 		name   string
@@ -166,8 +166,8 @@ func TestHandlersConformToSpec(t *testing.T) {
 // authenticated and then denied, which is a 403 rather than the 401 queryapi
 // used to answer before it ran on the apiserver runtime.
 func TestAnonymousRequestIsNotServed(t *testing.T) {
-	store := &recordingStore{}
-	srv := serve(t, store, queryapi.DefaultConfig(), allowAll())
+	logStore := &recordingLogStore{}
+	srv := serve(t, logStore, queryapi.DefaultConfig(), allowAll())
 
 	resp, err := http.Get(srv.URL + prefix + "/logs/loki/api/v1/query?query=%7Bservice_name%3D%22waf%22%7D")
 	if err != nil {
@@ -182,7 +182,7 @@ func TestAnonymousRequestIsNotServed(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
-	if got := store.seen(); got != "" {
+	if got := logStore.seen(); got != "" {
 		t.Errorf("backend saw project %q, want none", got)
 	}
 }
@@ -192,7 +192,7 @@ func TestAnonymousRequestIsNotServed(t *testing.T) {
 // duplicates, and a missing selector is a 400.
 func TestSeriesUnionsSelectors(t *testing.T) {
 	cfg := queryapi.DefaultConfig()
-	srv := serve(t, fake.New(20), cfg, allowAll())
+	srv := serve(t, fake.NewLogStore(20), cfg, allowAll())
 
 	get := func(t *testing.T, query string) (int, []map[string]string) {
 		t.Helper()
@@ -253,14 +253,14 @@ func TestSeriesUnionsSelectors(t *testing.T) {
 	}
 }
 
-// recordingStore records the project each query was scoped to, so a routing
+// recordingLogStore records the project each query was scoped to, so a routing
 // test can assert the identity that reached the backend.
-type recordingStore struct {
+type recordingLogStore struct {
 	mu      sync.Mutex
 	project string
 }
 
-func (s *recordingStore) note(ctx context.Context) error {
+func (s *recordingLogStore) note(ctx context.Context) error {
 	id, ok := miloauth.ProjectID(ctx)
 	if !ok {
 		return storage.ErrNoProject
@@ -271,13 +271,13 @@ func (s *recordingStore) note(ctx context.Context) error {
 	return nil
 }
 
-func (s *recordingStore) seen() string {
+func (s *recordingLogStore) seen() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.project
 }
 
-func (s *recordingStore) QueryLogs(ctx context.Context, q storage.LogQuery) (storage.LogIterator, error) {
+func (s *recordingLogStore) QueryLogs(ctx context.Context, q storage.LogQuery) (storage.LogIterator, error) {
 	if err := s.note(ctx); err != nil {
 		return nil, err
 	}
@@ -288,19 +288,19 @@ func (s *recordingStore) QueryLogs(ctx context.Context, q storage.LogQuery) (sto
 	}}, nil
 }
 
-func (s *recordingStore) LabelNames(ctx context.Context, _ storage.TimeRange) ([]string, error) {
+func (s *recordingLogStore) LabelNames(ctx context.Context, _ storage.TimeRange) ([]string, error) {
 	return nil, s.note(ctx)
 }
 
-func (s *recordingStore) LabelValues(ctx context.Context, _ string, _ storage.TimeRange) ([]string, error) {
+func (s *recordingLogStore) LabelValues(ctx context.Context, _ string, _ storage.TimeRange) ([]string, error) {
 	return nil, s.note(ctx)
 }
 
-func (s *recordingStore) Series(ctx context.Context, _ []logql.LabelMatcher, _ storage.TimeRange) ([]storage.LabelSet, error) {
+func (s *recordingLogStore) Series(ctx context.Context, _ []logql.LabelMatcher, _ storage.TimeRange) ([]storage.LabelSet, error) {
 	return nil, s.note(ctx)
 }
 
-func (s *recordingStore) Ping(context.Context) error { return nil }
+func (s *recordingLogStore) Ping(context.Context) error { return nil }
 
 type oneRowIterator struct {
 	row  storage.Row
@@ -352,9 +352,9 @@ func TestForwardedPathShapes(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &recordingStore{}
+			logStore := &recordingLogStore{}
 			cfg := queryapi.DefaultConfig()
-			srv := serve(t, store, cfg, allowAll())
+			srv := serve(t, logStore, cfg, allowAll())
 
 			req, err := http.NewRequest(http.MethodGet,
 				srv.URL+tc.path+`?query={service_name="waf"}&limit=5`, nil)
@@ -402,7 +402,7 @@ func TestForwardedPathShapes(t *testing.T) {
 			if got := payload.Data.Result[0].Values[0][1]; got != "recorded" {
 				t.Errorf("line = %q, want %q", got, "recorded")
 			}
-			if got := store.seen(); got != "proj-abc" {
+			if got := logStore.seen(); got != "proj-abc" {
 				t.Errorf("backend saw project %q, want %q", got, "proj-abc")
 			}
 		})
@@ -415,7 +415,7 @@ func TestForwardedPathShapes(t *testing.T) {
 // query works. Anything else metric-shaped must still be a 400.
 func TestGrafanaHealthProbe(t *testing.T) {
 	cfg := queryapi.DefaultConfig()
-	srv := serve(t, fake.New(2), cfg, allowAll())
+	srv := serve(t, fake.NewLogStore(2), cfg, allowAll())
 
 	get := func(t *testing.T, query string) (int, string) {
 		t.Helper()
@@ -505,8 +505,8 @@ func TestCraftedProjectPathIsNotAnIdentity(t *testing.T) {
 	const crafted = prefix + "/logs/loki/api/v1/label/projects/evil-corp/control-plane/v1alpha1/logs/loki/api/v1/query"
 
 	t.Run("no identity at all", func(t *testing.T) {
-		store := &recordingStore{}
-		srv := serve(t, store, queryapi.DefaultConfig(), allowAll())
+		logStore := &recordingLogStore{}
+		srv := serve(t, logStore, queryapi.DefaultConfig(), allowAll())
 
 		resp, err := http.Get(srv.URL + crafted + `?query={service_name="waf"}&limit=1`)
 		if err != nil {
@@ -523,14 +523,14 @@ func TestCraftedProjectPathIsNotAnIdentity(t *testing.T) {
 		if resp.StatusCode != http.StatusForbidden {
 			t.Errorf("status = %d, want 403", resp.StatusCode)
 		}
-		if got := store.seen(); got != "" {
+		if got := logStore.seen(); got != "" {
 			t.Errorf("backend saw project %q, want none", got)
 		}
 	})
 
 	t.Run("identity present, crafted path ignored", func(t *testing.T) {
-		store := &recordingStore{}
-		srv := serve(t, store, queryapi.DefaultConfig(), allowAll())
+		logStore := &recordingLogStore{}
+		srv := serve(t, logStore, queryapi.DefaultConfig(), allowAll())
 
 		req, err := http.NewRequest(http.MethodGet,
 			srv.URL+crafted+`?query={service_name="waf"}&limit=1`, nil)
@@ -552,11 +552,11 @@ func TestCraftedProjectPathIsNotAnIdentity(t *testing.T) {
 		// The crafted path must never become the project. Identity comes only
 		// from the verified user extras; a 200 is served only scoped to
 		// proj-abc, and the backend must never see evil-corp.
-		if got := store.seen(); got == "evil-corp" {
+		if got := logStore.seen(); got == "evil-corp" {
 			t.Fatalf("backend saw project %q from a crafted path", got)
 		}
-		if resp.StatusCode == http.StatusOK && store.seen() != "proj-abc" {
-			t.Errorf("served 200 for project %q, want proj-abc", store.seen())
+		if resp.StatusCode == http.StatusOK && logStore.seen() != "proj-abc" {
+			t.Errorf("served 200 for project %q, want proj-abc", logStore.seen())
 		}
 	})
 }
@@ -573,7 +573,7 @@ func TestCraftedProjectPathIsNotAnIdentity(t *testing.T) {
 func TestDiscoveryIsServed(t *testing.T) {
 	// A reviewer that denies everything, to prove the probe does not depend on
 	// one: the availability of the APIService must not turn on Milo's answer.
-	srv := serve(t, fake.New(2), queryapi.DefaultConfig(),
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(),
 		withAuthorizer(&stubAuthorizer{decision: authorizer.DecisionDeny}))
 
 	probe := func(r *http.Request) {
@@ -636,7 +636,7 @@ func TestDiscoveryIsServed(t *testing.T) {
 // covers them. They are non-resource paths, and the path authorizer abstains
 // on every resource request, so nothing listed there can open a query route.
 func TestProbesAreServedWithoutAuthorization(t *testing.T) {
-	srv := serve(t, fake.New(2), queryapi.DefaultConfig(),
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(),
 		withAuthorizer(&stubAuthorizer{decision: authorizer.DecisionDeny}))
 
 	for _, path := range []string{"/healthz", "/livez", "/readyz", "/metrics"} {
@@ -651,13 +651,13 @@ func TestProbesAreServedWithoutAuthorization(t *testing.T) {
 // backend and liveness does not: an outage that only makes queries fail must
 // take the pod out of service, not restart it.
 func TestReadyzReportsStorageUnavailable(t *testing.T) {
-	srv := serve(t, &unreachableStore{}, queryapi.DefaultConfig(), allowAll())
+	srv := serve(t, &unreachableLogStore{}, queryapi.DefaultConfig(), allowAll())
 
 	code, body := doBody(t, srv, http.MethodGet, "/readyz", nil)
 	if code != http.StatusInternalServerError {
 		t.Errorf("/readyz status = %d, want 500: %s", code, body)
 	}
-	if !strings.Contains(string(body), "[-]storage failed") {
+	if !strings.Contains(string(body), "[-]logs-storage failed") {
 		t.Errorf("/readyz body = %s, want the storage check to be the one that failed", body)
 	}
 	if code, _ := doBody(t, srv, http.MethodGet, "/livez", nil); code != http.StatusOK {
@@ -668,9 +668,44 @@ func TestReadyzReportsStorageUnavailable(t *testing.T) {
 	}
 }
 
-// unreachableStore fails Ping so the readiness check actually fails.
-type unreachableStore struct{ recordingStore }
+// TestReadyzReportsMetricsStorageUnavailable is the metrics counterpart: the
+// metric backend alone failing takes /readyz down and leaves liveness up.
+func TestReadyzReportsMetricsStorageUnavailable(t *testing.T) {
+	srv := serveWithMetricStore(t, fake.NewLogStore(2), &unreachableMetricStore{MetricStore: fake.NewMetricStore()},
+		queryapi.DefaultConfig(), allowAll())
 
-func (*unreachableStore) Ping(context.Context) error { return errors.New("dial: connection refused") }
+	code, body := doBody(t, srv, http.MethodGet, "/readyz", nil)
+	if code != http.StatusInternalServerError {
+		t.Errorf("/readyz status = %d, want 500: %s", code, body)
+	}
+	if !strings.Contains(string(body), "[-]metrics-storage failed") {
+		t.Errorf("/readyz body = %s, want the metrics-storage check to be the one that failed", body)
+	}
+	if strings.Contains(string(body), "[-]logs-storage failed") {
+		t.Errorf("/readyz body = %s, log storage should be healthy", body)
+	}
+	if code, _ := doBody(t, srv, http.MethodGet, "/livez", nil); code != http.StatusOK {
+		t.Errorf("/livez status = %d, want 200", code)
+	}
+	if code, _ := doBody(t, srv, http.MethodGet, "/healthz", nil); code != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200", code)
+	}
+}
 
-var _ storage.LogStore = (*unreachableStore)(nil)
+// unreachableMetricStore fails Ping so the metrics readiness check actually fails.
+type unreachableMetricStore struct{ *fake.MetricStore }
+
+func (*unreachableMetricStore) Ping(context.Context) error {
+	return errors.New("dial: connection refused")
+}
+
+var _ storage.MetricStore = (*unreachableMetricStore)(nil)
+
+// unreachableLogStore fails Ping so the readiness check actually fails.
+type unreachableLogStore struct{ recordingLogStore }
+
+func (*unreachableLogStore) Ping(context.Context) error {
+	return errors.New("dial: connection refused")
+}
+
+var _ storage.LogStore = (*unreachableLogStore)(nil)

@@ -39,6 +39,33 @@ tasks:
         done
       - CLICKHOUSE_TEST_ADDR=127.0.0.1:{{.PORT}} CLICKHOUSE_TEST_PASSWORD={{.PASSWORD}} go test -count=1 -run TestStoreAgainstClickHouse ./internal/storage/clickhouse/
 
+  test-integration-prometheus:
+    desc: Run the Prometheus store's integration test against a throwaway VictoriaMetrics (needs docker)
+    vars:
+      IMAGE: victoriametrics/victoria-metrics:v1.114.0
+      CONTAINER: queryapi-vm-test
+      PORT: 18428
+    cmds:
+      - docker rm -f {{.CONTAINER}} >/dev/null 2>&1 || true
+      # latencyOffset=0: just-imported samples are queryable at once. The result
+      # cache stays on, as in production.
+      - >-
+        docker run -d --name {{.CONTAINER}} -p {{.PORT}}:8428 {{.IMAGE}}
+        -search.latencyOffset=0s -retentionPeriod=1d
+      - defer: docker rm -f {{.CONTAINER}} >/dev/null
+      - |
+        for i in $(seq 1 60); do
+          curl -fsS http://127.0.0.1:{{.PORT}}/-/healthy >/dev/null 2>&1 && break
+          sleep 1
+        done
+      # A renamed or skipped test must fail the task, not pass it: -run that
+      # matches nothing exits 0. grep without -q reads to EOF: -q would SIGPIPE tee.
+      - |
+        set -o pipefail
+        PROMETHEUS_TEST_URL=http://127.0.0.1:{{.PORT}} \
+          go test -count=1 -v -run '^TestStoreAgainstVictoriaMetrics$' ./internal/storage/prometheus/ \
+          | tee /dev/stderr | grep -- '--- PASS: TestStoreAgainstVictoriaMetrics' >/dev/null
+
   lint:
     desc: Run golangci-lint (assumes it's installed on PATH -- see CI's pinned version)
     cmds:

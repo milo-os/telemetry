@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -38,7 +39,6 @@ func forwardIdentity(req *http.Request) {
 
 // authorizedRoutes is every route the router registers, with the status it
 // answers once the caller is authorized and the permission it is reviewed for.
-// The metrics handlers are stubs, hence the 501s -- they are gated all the same.
 var authorizedRoutes = []struct {
 	name    string
 	method  string
@@ -67,24 +67,24 @@ var authorizedRoutes = []struct {
 		http.StatusOK, authz.Permission{Resource: "logs", Verb: "getSeries"},
 	},
 	{
-		"prom query", http.MethodPost, "/metrics/api/v1/query",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "query"},
+		"prom query", http.MethodPost, "/metrics/api/v1/query?query=up",
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "query"},
 	},
 	{
-		"prom query_range", http.MethodPost, "/metrics/api/v1/query_range",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "query"},
+		"prom query_range", http.MethodPost, "/metrics/api/v1/query_range?query=up&start=0&end=60&step=15",
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "query"},
 	},
 	{
 		"prom labels", http.MethodGet, "/metrics/api/v1/labels",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "getLabels"},
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "getLabels"},
 	},
 	{
 		"prom label values", http.MethodGet, "/metrics/api/v1/label/service/values",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "getLabels"},
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "getLabels"},
 	},
 	{
-		"prom series", http.MethodGet, "/metrics/api/v1/series",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "getSeries"},
+		"prom series", http.MethodGet, "/metrics/api/v1/series?match[]=up",
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "getSeries"},
 	},
 }
 
@@ -132,7 +132,7 @@ func TestEveryRouteIsAuthorized(t *testing.T) {
 	for _, tc := range authorizedRoutes {
 		t.Run(tc.name, func(t *testing.T) {
 			allow := &stubAuthorizer{decision: authorizer.DecisionAllow}
-			allowed := serve(t, fake.New(2), queryapi.DefaultConfig(), withAuthorizer(allow))
+			allowed := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(), withAuthorizer(allow))
 
 			if got := do(t, allowed, tc.method, prefix+tc.path); got != tc.allowed {
 				t.Errorf("allowed: status = %d, want %d", got, tc.allowed)
@@ -148,7 +148,7 @@ func TestEveryRouteIsAuthorized(t *testing.T) {
 					authz.APIGroup, tc.perm.Resource, tc.perm.Verb)
 			}
 
-			denied := serve(t, fake.New(2), queryapi.DefaultConfig(),
+			denied := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(),
 				withAuthorizer(&stubAuthorizer{decision: authorizer.DecisionDeny}))
 			if got := do(t, denied, tc.method, prefix+tc.path); got != http.StatusForbidden {
 				t.Errorf("denied: status = %d, want 403", got)
@@ -182,14 +182,14 @@ func TestAuthorizerFailureIsNotServed(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			store := &recordingStore{}
-			srv := serve(t, store, queryapi.DefaultConfig(), withAuthorizer(tc.delegate))
+			logStore := &recordingLogStore{}
+			srv := serve(t, logStore, queryapi.DefaultConfig(), withAuthorizer(tc.delegate))
 
 			got := do(t, srv, http.MethodGet, prefix+`/logs/loki/api/v1/query?query={service_name="waf"}`)
 			if got != tc.want {
 				t.Errorf("status = %d, want %d", got, tc.want)
 			}
-			if seen := store.seen(); seen != "" {
+			if seen := logStore.seen(); seen != "" {
 				t.Errorf("backend saw project %q, want none", seen)
 			}
 		})
@@ -208,13 +208,35 @@ func TestNilAuthorizerIsRefused(t *testing.T) {
 	_, err := (&queryapi.ServerConfig{
 		Generic: generic,
 		Extra: queryapi.ExtraConfig{
-			Logger: discardLogger(),
-			Store:  fake.New(2),
-			Query:  queryapi.DefaultConfig(),
+			Logger:      discardLogger(),
+			LogStore:    fake.NewLogStore(2),
+			MetricStore: fake.NewMetricStore(),
+			Query:       queryapi.DefaultConfig(),
 		},
 	}).Complete()
-	if err == nil {
-		t.Fatal("Complete() = nil error, want a refusal to build a server with no authorizer")
+	if err == nil || !strings.Contains(err.Error(), "an authorizer is required") {
+		t.Fatalf("Complete() error = %v, want the authorizer refusal", err)
+	}
+}
+
+// TestNilMetricStoreIsRefused pins that the server cannot be assembled
+// without a metric store.
+func TestNilMetricStoreIsRefused(t *testing.T) {
+	generic := queryapi.NewGenericConfig()
+	generic.ExternalAddress = "queryapi.test:443"
+	generic.Authentication.Authenticator = testAuthenticator()
+	generic.Authorization.Authorizer = allowAll().authz
+
+	_, err := (&queryapi.ServerConfig{
+		Generic: generic,
+		Extra: queryapi.ExtraConfig{
+			Logger:   discardLogger(),
+			LogStore: fake.NewLogStore(2),
+			Query:    queryapi.DefaultConfig(),
+		},
+	}).Complete()
+	if err == nil || !strings.Contains(err.Error(), "no metric store configured") {
+		t.Fatalf("Complete() error = %v, want the metric store refusal", err)
 	}
 }
 
@@ -225,7 +247,7 @@ func TestNilAuthorizerIsRefused(t *testing.T) {
 // route could not evaluate a policy bound to a group.
 func TestReviewCarriesTheWholeCaller(t *testing.T) {
 	az := &stubAuthorizer{decision: authorizer.DecisionAllow}
-	srv := serve(t, fake.New(2), queryapi.DefaultConfig(), withAuthorizer(az))
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(), withAuthorizer(az))
 
 	if got := do(t, srv, http.MethodGet, prefix+"/logs/loki/api/v1/label/severity/values"); got != http.StatusOK {
 		t.Fatalf("status = %d, want 200", got)
@@ -284,8 +306,8 @@ func TestUnmappedPathIsDeniedWithoutAReview(t *testing.T) {
 	for name, path := range paths {
 		t.Run(name, func(t *testing.T) {
 			az := &stubAuthorizer{decision: authorizer.DecisionAllow}
-			store := &recordingStore{}
-			srv := serve(t, store, queryapi.DefaultConfig(), withAuthorizer(az))
+			logStore := &recordingLogStore{}
+			srv := serve(t, logStore, queryapi.DefaultConfig(), withAuthorizer(az))
 
 			if got := do(t, srv, http.MethodGet, path); got != http.StatusForbidden {
 				t.Errorf("status = %d, want 403", got)
@@ -293,7 +315,7 @@ func TestUnmappedPathIsDeniedWithoutAReview(t *testing.T) {
 			if reviews := az.reviews(); len(reviews) != 0 {
 				t.Errorf("authorizer saw %d telemetry reviews, want none", len(reviews))
 			}
-			if seen := store.seen(); seen != "" {
+			if seen := logStore.seen(); seen != "" {
 				t.Errorf("backend saw project %q, want none", seen)
 			}
 		})
@@ -305,7 +327,7 @@ func TestUnmappedPathIsDeniedWithoutAReview(t *testing.T) {
 // and it never becomes the tenancy a review is evaluated against.
 func TestCraftedProjectPathIsNotReviewed(t *testing.T) {
 	az := &stubAuthorizer{decision: authorizer.DecisionAllow}
-	srv := serve(t, fake.New(2), queryapi.DefaultConfig(), withAuthorizer(az))
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(), withAuthorizer(az))
 
 	if got := do(t, srv, http.MethodGet, prefix+"/logs/loki/api/v1/label/projects/values"); got != http.StatusOK {
 		t.Fatalf("status = %d, want 200", got)
@@ -327,7 +349,7 @@ func TestCraftedProjectPathIsNotReviewed(t *testing.T) {
 // says so, and this checks that it still does.
 func TestForbiddenResponseIsTheFrameworkStatus(t *testing.T) {
 	router := loadSpec(t)
-	srv := serve(t, fake.New(2), queryapi.DefaultConfig(),
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(),
 		withAuthorizer(&stubAuthorizer{decision: authorizer.DecisionDeny}))
 
 	const path = "/logs/loki/api/v1/labels"
@@ -379,8 +401,8 @@ func TestAuthenticationFailureIsUnauthorized(t *testing.T) {
 	d := withAuthorizer(az)
 	d.authn = failingAuthenticator{}
 
-	store := &recordingStore{}
-	srv := serve(t, store, queryapi.DefaultConfig(), d)
+	logStore := &recordingLogStore{}
+	srv := serve(t, logStore, queryapi.DefaultConfig(), d)
 
 	got := do(t, srv, http.MethodGet, prefix+`/logs/loki/api/v1/query?query={service_name="waf"}`)
 	if got != http.StatusUnauthorized {
@@ -389,7 +411,7 @@ func TestAuthenticationFailureIsUnauthorized(t *testing.T) {
 	if reviews := az.reviews(); len(reviews) != 0 {
 		t.Errorf("authorizer saw %d reviews, want none", len(reviews))
 	}
-	if seen := store.seen(); seen != "" {
+	if seen := logStore.seen(); seen != "" {
 		t.Errorf("backend saw project %q, want none", seen)
 	}
 }
@@ -416,8 +438,8 @@ func TestNoHeaderNamesTheProject(t *testing.T) {
 			// An allow-everything reviewer, so that anything reaching the
 			// backend would be visible rather than hidden behind a 403.
 			az := &stubAuthorizer{decision: authorizer.DecisionAllow}
-			store := &recordingStore{}
-			srv := serve(t, store, queryapi.DefaultConfig(), withAuthorizer(az))
+			logStore := &recordingLogStore{}
+			srv := serve(t, logStore, queryapi.DefaultConfig(), withAuthorizer(az))
 
 			code, _ := doBody(t, srv, http.MethodGet,
 				prefix+`/logs/loki/api/v1/query?query={service_name="waf"}`,
@@ -430,7 +452,7 @@ func TestNoHeaderNamesTheProject(t *testing.T) {
 					t.Errorf("review carried parent-name %v for a caller that named its own project", got)
 				}
 			}
-			if seen := store.seen(); seen != "" {
+			if seen := logStore.seen(); seen != "" {
 				t.Errorf("backend saw project %q, want none", seen)
 			}
 		})
@@ -444,8 +466,8 @@ func TestNoHeaderNamesTheProject(t *testing.T) {
 // miloauth filter behind the routes is.
 func TestUnscopedCallerIsNotServed(t *testing.T) {
 	az := &stubAuthorizer{decision: authorizer.DecisionAllow}
-	store := &recordingStore{}
-	srv := serve(t, store, queryapi.DefaultConfig(), withAuthorizer(az))
+	logStore := &recordingLogStore{}
+	srv := serve(t, logStore, queryapi.DefaultConfig(), withAuthorizer(az))
 
 	code, _ := doBody(t, srv, http.MethodGet,
 		prefix+`/logs/loki/api/v1/query?query={service_name="waf"}`,
@@ -458,7 +480,7 @@ func TestUnscopedCallerIsNotServed(t *testing.T) {
 	if code != http.StatusForbidden {
 		t.Errorf("status = %d, want 403", code)
 	}
-	if seen := store.seen(); seen != "" {
+	if seen := logStore.seen(); seen != "" {
 		t.Errorf("backend saw project %q, want none", seen)
 	}
 }
@@ -467,7 +489,7 @@ func TestUnscopedCallerIsNotServed(t *testing.T) {
 // write, the way TestHandlersConformToSpec checks the success ones.
 func TestErrorResponsesConformToSpec(t *testing.T) {
 	router := loadSpec(t)
-	srv := serve(t, fake.New(2), queryapi.DefaultConfig(), allowAll())
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(), allowAll())
 
 	const path = "/logs/loki/api/v1/series"
 	// match[] is required, so this is a handler-written 400.

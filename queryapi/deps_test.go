@@ -26,6 +26,7 @@ import (
 	"go.datum.net/o11y/queryapi"
 	"go.datum.net/o11y/queryapi/internal/authz"
 	"go.datum.net/o11y/queryapi/internal/storage"
+	"go.datum.net/o11y/queryapi/internal/storage/fake"
 )
 
 // testAuthenticator reads the X-Remote-* headers Milo's aggregator sets, the
@@ -149,7 +150,15 @@ func withAuthorizer(delegate authorizer.Authorizer) deps {
 // exactly one thing, the front proxy's client certificate check, which
 // testAuthenticator stands in for; every other filter, the route table, the
 // request info resolver and the authorization chain are the real ones.
-func serve(t *testing.T, store storage.LogStore, cfg queryapi.Config, d deps) *httptest.Server {
+func serve(t *testing.T, logStore storage.LogStore, cfg queryapi.Config, d deps) *httptest.Server {
+	t.Helper()
+	return serveWithMetricStore(t, logStore, fake.NewMetricStore(), cfg, d)
+}
+
+// serveWithMetricStore is serve with a chosen metric store.
+func serveWithMetricStore(
+	t *testing.T, logStore storage.LogStore, metricStore storage.MetricStore, cfg queryapi.Config, d deps,
+) *httptest.Server {
 	t.Helper()
 
 	generic := queryapi.NewGenericConfig()
@@ -164,9 +173,10 @@ func serve(t *testing.T, store storage.LogStore, cfg queryapi.Config, d deps) *h
 	serverConfig := &queryapi.ServerConfig{
 		Generic: generic,
 		Extra: queryapi.ExtraConfig{
-			Logger: slog.New(slog.DiscardHandler),
-			Store:  store,
-			Query:  cfg,
+			Logger:      slog.New(slog.DiscardHandler),
+			LogStore:    logStore,
+			MetricStore: metricStore,
+			Query:       cfg,
 		},
 	}
 	completed, err := serverConfig.Complete()

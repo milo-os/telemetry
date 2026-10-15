@@ -39,11 +39,10 @@ info:
     follow-up once the tail transport (chunked HTTP vs. WebSocket) is decided.
 
 
-    Metric endpoints are specced here so `datumctl`/portal and Prometheus-API
-    client work can start, but return 501 until implemented — logs are the
-    Phase 1 priority; see the roadmap in
-    enhancements/telemetry/README.md.
-  version: "0.3.0"
+    Metric endpoints accept PromQL (MetricsQL where the backend is
+    VictoriaMetrics), evaluated by the configured backend. queryapi confines
+    every metric query to the caller's project.
+  version: "0.4.0"
 servers:
   - url: "/projects/{projectId}/control-plane/apis/{o11yGroup}/v1alpha1"
     description: >-
@@ -538,8 +537,9 @@ components:
     UnexpectedError:
       description: >-
         Any error status not explicitly listed above, including 501 Not
-        Implemented. The log endpoints are served from ClickHouse; the metric
-        endpoints are still stubs and answer 501 unconditionally. A log
+        Implemented. The log endpoints are served from ClickHouse; a metric
+        endpoint answers 422 when the backend response is too large, 502 when
+        the backend is unavailable, and 503 on timeout. A log
         endpoint returns 501 only for an operation the configured storage
         backend does not implement.
       content:
@@ -678,9 +678,8 @@ components:
         query:
           type: string
           description: >-
-            PromQL-style label-matched series selector, e.g.
-            `cpu_usage{service="foo"}`. Aggregation functions (sum, avg,
-            rate) are not yet supported and are rejected with 400.
+            A PromQL expression. Aggregations and functions are evaluated by
+            the backend.
           example: 'cpu_usage{service="compute-workload"}'
         time:
           type: string
@@ -694,9 +693,8 @@ components:
         query:
           type: string
           description: >-
-            PromQL-style label-matched series selector, e.g.
-            `cpu_usage{service="foo"}`. Aggregation functions (sum, avg,
-            rate) are not yet supported and are rejected with 400.
+            A PromQL expression. Aggregations and functions are evaluated by
+            the backend.
           example: 'cpu_usage{service="compute-workload"}'
         start:
           type: string
@@ -706,25 +704,6 @@ components:
           type: string
         timeout:
           type: string
-
-    PromVectorResult:
-      type: object
-      required: [metric, value]
-      properties:
-        metric:
-          type: object
-          additionalProperties:
-            type: string
-          description: Label set for this series, including __name__.
-        value:
-          type: array
-          description: >-
-            [unixTimestamp, stringValue] — a single sample, matching
-            Prometheus's "vector" result type for instant queries.
-          items:
-            type: string
-          minItems: 2
-          maxItems: 2
 
     PromMatrixResult:
       type: object
@@ -743,7 +722,9 @@ components:
           items:
             type: array
             items:
-              type: string
+              oneOf:
+                - type: number
+                - type: string
             minItems: 2
             maxItems: 2
 
@@ -760,15 +741,9 @@ components:
           properties:
             resultType:
               type: string
-              enum: [vector]
-              description: >-
-                Always "vector" for the label-matched selector subset this
-                service accepts. Prometheus's "scalar"/"string" result types
-                don't apply to a plain series selector.
+              enum: [vector, matrix, scalar, string]
             result:
-              type: array
-              items:
-                $ref: "#/components/schemas/PromVectorResult"
+              description: "Shaped by resultType, as in the Prometheus HTTP API."
 
     PromRangeQueryResponse:
       type: object

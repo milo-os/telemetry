@@ -37,6 +37,11 @@ type Options struct {
 
 	// Query is what the handlers need.
 	Query Config
+
+	// legacyStorage is the deprecated --storage, folded into
+	// Query.LogsStorage by Complete.
+	legacyStorage string
+	flags         *pflag.FlagSet
 }
 
 // NewOptions returns Options with production-reasonable defaults.
@@ -90,17 +95,45 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	// names and meanings activity's deployment uses.
 	o.Recommended.AddFlags(fs)
 
-	fs.StringVar(&o.Query.Storage, "storage", o.Query.Storage, "storage backend: fake or clickhouse")
+	fs.StringVar(&o.Query.LogsStorage, "logs-storage", o.Query.LogsStorage, "log storage backend: fake or clickhouse")
+	fs.StringVar(&o.Query.MetricsStorage, "metrics-storage", o.Query.MetricsStorage, "metric storage backend: fake or prometheus")
+	fs.StringVar(&o.Query.PrometheusURL, "prometheus-url", o.Query.PrometheusURL,
+		"base URL of the Prometheus-compatible query API")
+	fs.StringVar(&o.Query.PrometheusTenancy, "prometheus-tenancy", o.Query.PrometheusTenancy,
+		"how the backend confines a query to the caller's project; the only mode is extra-label, "+
+			"which requires VictoriaMetrics or another server that honors extra_label")
+	fs.StringVar(&o.Query.PrometheusProjectLabel, "prometheus-project-label", o.Query.PrometheusProjectLabel,
+		"label the tenancy mode constrains to the caller's project")
+	fs.Int64Var(&o.Query.MaxResponseBytes, "max-response-bytes", o.Query.MaxResponseBytes,
+		"largest metric backend response accepted, in bytes")
+	fs.StringVar(&o.legacyStorage, "storage", "", "deprecated alias for --logs-storage")
+	_ = fs.MarkDeprecated("storage", "use --logs-storage; --storage is removed in the next release")
+	o.flags = fs
 	fs.Float64Var(&o.Query.FakeRate, "fake-rate", o.Query.FakeRate,
 		"synthetic log lines per second (fake backend)")
 	fs.DurationVar(&o.Query.QueryTimeout, "query-timeout", o.Query.QueryTimeout,
 		"maximum duration of a single storage query")
+	fs.DurationVar(&o.Query.MaxRange, "max-range", o.Query.MaxRange, "longest query_range window")
 	fs.IntVar(&o.Query.DefaultLimit, "default-limit", o.Query.DefaultLimit, "default maximum log lines returned")
 	fs.IntVar(&o.Query.MaxLimit, "max-limit", o.Query.MaxLimit, "hard ceiling on log lines returned")
 
 	// There is deliberately no flag that lets a caller name its own project.
 	// The project comes from the verified identity's iam.miloapis.com/parent-name
 	// extra, and from nowhere else.
+}
+
+// Complete folds deprecated flags into their replacements. Call it after
+// parsing and before Validate.
+func (o *Options) Complete() error {
+	if o.legacyStorage == "" {
+		return nil
+	}
+	if o.flags != nil && o.flags.Changed("logs-storage") && o.Query.LogsStorage != o.legacyStorage {
+		return fmt.Errorf("--storage=%q conflicts with --logs-storage=%q; set only --logs-storage",
+			o.legacyStorage, o.Query.LogsStorage)
+	}
+	o.Query.LogsStorage = o.legacyStorage
+	return nil
 }
 
 // Validate reports whether the options are usable.
@@ -116,7 +149,7 @@ func (o *Options) Validate() error {
 }
 
 // Config assembles the server configuration.
-func (o *Options) Config(logger *slog.Logger, store storage.LogStore) (*ServerConfig, error) {
+func (o *Options) Config(logger *slog.Logger, logStore storage.LogStore, metricStore storage.MetricStore) (*ServerConfig, error) {
 	// With no --tls-cert-file the apiserver convention is to self-sign into
 	// --cert-dir. That is the local-development path only: in the cluster the
 	// serving certificate comes from the cert-manager CSI driver
@@ -143,6 +176,6 @@ func (o *Options) Config(logger *slog.Logger, store storage.LogStore) (*ServerCo
 
 	return &ServerConfig{
 		Generic: generic,
-		Extra:   ExtraConfig{Logger: logger, Store: store, Query: o.Query},
+		Extra:   ExtraConfig{Logger: logger, LogStore: logStore, MetricStore: metricStore, Query: o.Query},
 	}, nil
 }

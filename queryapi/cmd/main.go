@@ -20,6 +20,7 @@ import (
 	"go.datum.net/o11y/queryapi/internal/storage"
 	"go.datum.net/o11y/queryapi/internal/storage/clickhouse"
 	"go.datum.net/o11y/queryapi/internal/storage/fake"
+	"go.datum.net/o11y/queryapi/internal/storage/prometheus"
 )
 
 func main() {
@@ -39,16 +40,24 @@ func run(logger *slog.Logger, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
+	if err := opts.Complete(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
 	if err := opts.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	store, err := newStore(opts.Query)
+	logStore, err := newLogStore(opts.Query)
 	if err != nil {
 		return fmt.Errorf("configure storage: %w", err)
 	}
 
-	cfg, err := opts.Config(logger, store)
+	metricStore, err := newMetricStore(opts.Query)
+	if err != nil {
+		return fmt.Errorf("configure metrics storage: %w", err)
+	}
+
+	cfg, err := opts.Config(logger, logStore, metricStore)
 	if err != nil {
 		return err
 	}
@@ -68,11 +77,11 @@ func run(logger *slog.Logger, args []string) error {
 	return server.Run(ctx)
 }
 
-// newStore builds the configured storage backend.
-func newStore(cfg queryapi.Config) (storage.LogStore, error) {
-	switch cfg.Storage {
+// newLogStore builds the configured log storage backend.
+func newLogStore(cfg queryapi.Config) (storage.LogStore, error) {
+	switch cfg.LogsStorage {
 	case "fake":
-		return fake.New(cfg.FakeRate), nil
+		return fake.NewLogStore(cfg.FakeRate), nil
 	case "clickhouse":
 		chCfg, err := clickhouse.ConfigFromEnv()
 		if err != nil {
@@ -80,6 +89,27 @@ func newStore(cfg queryapi.Config) (storage.LogStore, error) {
 		}
 		return clickhouse.New(chCfg)
 	default:
-		return nil, fmt.Errorf("unknown storage backend %q", cfg.Storage)
+		return nil, fmt.Errorf("unknown storage backend %q", cfg.LogsStorage)
+	}
+}
+
+// newMetricStore builds the configured metric backend.
+func newMetricStore(cfg queryapi.Config) (storage.MetricStore, error) {
+	switch cfg.MetricsStorage {
+	case "fake":
+		return fake.NewMetricStore(), nil
+	case "prometheus":
+		tenancy, err := prometheus.ParseTenancy(cfg.PrometheusTenancy)
+		if err != nil {
+			return nil, err
+		}
+		return prometheus.New(prometheus.Config{
+			URL:              cfg.PrometheusURL,
+			Tenancy:          tenancy,
+			ProjectLabel:     cfg.PrometheusProjectLabel,
+			MaxResponseBytes: cfg.MaxResponseBytes,
+		})
+	default:
+		return nil, fmt.Errorf("unknown metrics storage backend %q", cfg.MetricsStorage)
 	}
 }

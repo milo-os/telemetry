@@ -25,7 +25,7 @@ func testRange() storage.TimeRange {
 }
 
 // drain runs q against s and collects every row.
-func drain(t *testing.T, s *fake.Store, q storage.LogQuery) []storage.Row {
+func drain(t *testing.T, s *fake.LogStore, q storage.LogQuery) []storage.Row {
 	t.Helper()
 	iter, err := s.QueryLogs(testCtx(), q)
 	if err != nil {
@@ -58,7 +58,7 @@ func mustParse(t *testing.T, raw string) *logql.Query {
 }
 
 func TestRequiresProject(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 	_, err := s.QueryLogs(context.Background(), query(nil, nil, 10, storage.DirectionBackward))
 	if !errors.Is(err, storage.ErrNoProject) {
 		t.Fatalf("QueryLogs without a project = %v, want ErrNoProject", err)
@@ -69,11 +69,11 @@ func TestRequiresProject(t *testing.T) {
 }
 
 func TestDeterministic(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 	q := query(nil, nil, 50, storage.DirectionBackward)
 
 	first := drain(t, s, q)
-	second := drain(t, fake.New(2), q)
+	second := drain(t, fake.NewLogStore(2), q)
 
 	if len(first) != len(second) {
 		t.Fatalf("row counts differ: %d vs %d", len(first), len(second))
@@ -86,7 +86,7 @@ func TestDeterministic(t *testing.T) {
 }
 
 func TestBackwardReturnsNewestFirst(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 	rows := drain(t, s, query(nil, nil, 10, storage.DirectionBackward))
 
 	if len(rows) != 10 {
@@ -107,7 +107,7 @@ func TestBackwardReturnsNewestFirst(t *testing.T) {
 }
 
 func TestForwardReturnsOldestFirst(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 	rows := drain(t, s, query(nil, nil, 10, storage.DirectionForward))
 
 	for i := 1; i < len(rows); i++ {
@@ -125,7 +125,7 @@ func TestForwardReturnsOldestFirst(t *testing.T) {
 }
 
 func TestLabelMatcherFilters(t *testing.T) {
-	s := fake.New(20)
+	s := fake.NewLogStore(20)
 	q := mustParse(t, `{service_name="waf"}`)
 	rows := drain(t, s, query(q.Matchers, nil, 100, storage.DirectionBackward))
 
@@ -140,7 +140,7 @@ func TestLabelMatcherFilters(t *testing.T) {
 }
 
 func TestAttributeLabelMatcherFilters(t *testing.T) {
-	s := fake.New(20)
+	s := fake.NewLogStore(20)
 	q := mustParse(t, `{resource_name="gateway-us-east"}`)
 	rows := drain(t, s, query(q.Matchers, nil, 100, storage.DirectionBackward))
 
@@ -155,7 +155,7 @@ func TestAttributeLabelMatcherFilters(t *testing.T) {
 }
 
 func TestLineFilterAppliesBeforeLimit(t *testing.T) {
-	s := fake.New(20)
+	s := fake.NewLogStore(20)
 	q := mustParse(t, `{service_name="envoy-gateway"} |= "GET"`)
 	rows := drain(t, s, query(q.Matchers, q.Filters, 20, storage.DirectionBackward))
 
@@ -170,7 +170,7 @@ func TestLineFilterAppliesBeforeLimit(t *testing.T) {
 }
 
 func TestNoMatchesIsEmptyNotError(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 	q := mustParse(t, `{service_name="does-not-exist"}`)
 	rows := drain(t, s, query(q.Matchers, nil, 100, storage.DirectionBackward))
 	if len(rows) != 0 {
@@ -179,7 +179,7 @@ func TestNoMatchesIsEmptyNotError(t *testing.T) {
 }
 
 func TestDiscovery(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 
 	names, err := s.LabelNames(testCtx(), testRange())
 	if err != nil {
@@ -222,7 +222,7 @@ func TestDiscovery(t *testing.T) {
 }
 
 func TestRejectsNonPositiveLimit(t *testing.T) {
-	s := fake.New(2)
+	s := fake.NewLogStore(2)
 	for _, limit := range []int{0, -1} {
 		if _, err := s.QueryLogs(testCtx(), query(nil, nil, limit, storage.DirectionBackward)); !errors.Is(err, storage.ErrInvalidLimit) {
 			t.Errorf("QueryLogs with limit %d = %v, want ErrInvalidLimit", limit, err)
@@ -231,7 +231,7 @@ func TestRejectsNonPositiveLimit(t *testing.T) {
 }
 
 func TestPing(t *testing.T) {
-	if err := fake.New(2).Ping(context.Background()); err != nil {
+	if err := fake.NewLogStore(2).Ping(context.Background()); err != nil {
 		t.Fatalf("Ping: %v", err)
 	}
 }
@@ -243,11 +243,11 @@ func TestPing(t *testing.T) {
 // then read every one of them from a single map, and it advertised dotted OTel
 // keys the LogQL parser rejects.
 func TestLabelNamesAreAllResolvable(t *testing.T) {
-	store := fake.New(2)
+	logStore := fake.NewLogStore(2)
 	ctx := miloauth.WithProject(context.Background(), "proj-a")
 	ran := storage.TimeRange{Start: time.Now().Add(-time.Hour), End: time.Now()}
 
-	names, err := store.LabelNames(ctx, ran)
+	names, err := logStore.LabelNames(ctx, ran)
 	if err != nil {
 		t.Fatalf("LabelNames: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestLabelNamesAreAllResolvable(t *testing.T) {
 		if _, err := logql.Parse("{" + name + `="x"}`); err != nil {
 			t.Errorf("advertised name %q is not a valid LogQL label: %v", name, err)
 		}
-		values, err := store.LabelValues(ctx, name, ran)
+		values, err := logStore.LabelValues(ctx, name, ran)
 		if err != nil {
 			t.Fatalf("LabelValues(%q): %v", name, err)
 		}

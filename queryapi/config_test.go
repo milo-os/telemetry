@@ -3,6 +3,7 @@
 package queryapi
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -54,16 +55,17 @@ func TestDefaultOptionsServeNothingFromEtcd(t *testing.T) {
 		"secure-port", "tls-cert-file", "tls-private-key-file",
 		"authentication-kubeconfig", "requestheader-client-ca-file",
 		"authorization-kubeconfig", "authorization-always-allow-paths",
-		"storage", "query-timeout",
+		"logs-storage", "storage", "query-timeout",
 	} {
 		if fs.Lookup(name) == nil {
 			t.Errorf("--%s is not registered", name)
 		}
 	}
 	// There has never been a flag by which a caller names its own project, and
-	// there must not be one now.
+	// there must not be one now. --prometheus-project-label names the backend
+	// label the tenancy mode constrains, not a project.
 	fs.VisitAll(func(f *pflag.Flag) {
-		if strings.Contains(f.Name, "project") {
+		if strings.Contains(f.Name, "project") && f.Name != "prometheus-project-label" {
 			t.Errorf("--%s exists: nothing but a verified identity may name the project", f.Name)
 		}
 	})
@@ -93,5 +95,74 @@ func TestOptionsRejectAlwaysAllowingTheAPI(t *testing.T) {
 		o.Recommended.Authorization.AlwaysAllowPaths, "/apis/o11y.miloapis.com/*")
 	if err := o.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want a refusal")
+	}
+}
+
+func TestLogsStorageFlags(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{"default", nil, "fake", false},
+		{"logs-storage alone", []string{"--logs-storage=clickhouse"}, "clickhouse", false},
+		{"deprecated storage alone", []string{"--storage=clickhouse"}, "clickhouse", false},
+		{"both agree", []string{"--storage=clickhouse", "--logs-storage=clickhouse"}, "clickhouse", false},
+		{"both conflict", []string{"--storage=fake", "--logs-storage=clickhouse"}, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewOptions()
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			fs.SetOutput(io.Discard) // the deprecation warning
+			o.AddFlags(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			err := o.Complete()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Complete() = nil, want a conflict error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Complete() = %v", err)
+			}
+			if o.Query.LogsStorage != tc.want {
+				t.Errorf("LogsStorage = %q, want %q", o.Query.LogsStorage, tc.want)
+			}
+		})
+	}
+}
+
+func TestMetricsStorageFlags(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr bool
+	}{
+		{"default fake", nil, false},
+		{"prometheus complete", []string{"--metrics-storage=prometheus", "--prometheus-url=http://vm:8429", "--prometheus-tenancy=extra-label"}, false},
+		{"prometheus no url", []string{"--metrics-storage=prometheus", "--prometheus-tenancy=extra-label"}, true},
+		{"prometheus no tenancy", []string{"--metrics-storage=prometheus", "--prometheus-url=http://vm:8429"}, true},
+		{"prometheus unknown tenancy", []string{"--metrics-storage=prometheus", "--prometheus-url=http://vm:8429", "--prometheus-tenancy=rewrite"}, true},
+		{"unknown backend", []string{"--metrics-storage=thanos"}, true},
+		{"zero response limit", []string{"--max-response-bytes=0"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewOptions()
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			o.AddFlags(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			err := o.Query.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
 	}
 }

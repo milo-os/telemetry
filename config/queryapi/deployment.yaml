@@ -35,7 +35,10 @@ spec:
           # the rest of this list alone. Same reason activity's deployment is
           # written this way; see queryapi/README.md for a worked patch.
           args:
-            - --storage=$(STORAGE)
+            - --logs-storage=$(STORAGE)
+            - --metrics-storage=$(METRICS_STORAGE)
+            - --prometheus-url=$(PROMETHEUS_URL)
+            - --prometheus-tenancy=$(PROMETHEUS_TENANCY)
             - --secure-port=$(SECURE_PORT)
             - --tls-cert-file=$(TLS_CERT_FILE)
             - --tls-private-key-file=$(TLS_PRIVATE_KEY_FILE)
@@ -51,6 +54,16 @@ spec:
             # once it can.
             - name: STORAGE
               value: "fake"
+            # "prometheus" also needs PROMETHEUS_URL and PROMETHEUS_TENANCY.
+            # extra-label is the only tenancy mode, and it requires
+            # VictoriaMetrics: a backend that ignores extra_label applies no
+            # isolation.
+            - name: METRICS_STORAGE
+              value: "fake"
+            - name: PROMETHEUS_URL
+              value: ""
+            - name: PROMETHEUS_TENANCY
+              value: ""
             # TLS is the whole point of the identity chain, not a hardening
             # extra: only a TLS connection carries the front proxy's client
             # certificate, and only that certificate makes the forwarded

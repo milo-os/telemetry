@@ -39,12 +39,15 @@ permissions, not collections.
 
 ## Storage backends
 
-| `--storage` | Behaviour |
+| `--logs-storage` | Behaviour |
 | --- | --- |
 | `fake` (default) | Deterministic synthetic logs, a pure function of the query's time range. Same range always returns the same rows. |
 | `clickhouse` | Serves log queries and label/stream discovery against the `o11y.logs` schema via LogQL-to-SQL translation. `/readyz` pings the backend. |
 
-Metric (Prometheus-shaped) endpoints return 501 on both backends.
+| `--metrics-storage` | Behaviour |
+| --- | --- |
+| `fake` (default) | One synthetic series, `fake_up`, for the caller's project. |
+| `prometheus` | Any Prometheus query API backend, confined to the caller's project by `--prometheus-tenancy`. |
 
 ## Flags
 
@@ -71,7 +74,14 @@ them without restating the rest. See [Deployment](#deployment).
 | `--authorization-always-allow-paths` | `/healthz,/readyz,/livez,/metrics` |
 | `--authorization-webhook-cache-authorized-ttl` | `10s` |
 | `--authorization-webhook-cache-unauthorized-ttl` | `10s` |
-| `--storage` | `fake` |
+| `--logs-storage` | `fake` |
+| `--storage` | deprecated alias for `--logs-storage`; removed in the next release |
+| `--metrics-storage` | `fake` |
+| `--prometheus-url` | none; required with `--metrics-storage=prometheus` |
+| `--prometheus-tenancy` | none; required with `--metrics-storage=prometheus`. The only mode is `extra-label`, which requires VictoriaMetrics |
+| `--prometheus-project-label` | `resourcemanager_datumapis_com_project_name` |
+| `--max-response-bytes` | `33554432` (32 MiB) |
+| `--max-range` | `744h` |
 | `--fake-rate` | `2` (lines/sec) |
 | `--query-timeout` | `30s` |
 | `--default-limit` | `100` |
@@ -99,7 +109,7 @@ serving stack owns the `http.Server` and sets them (32s and 90s).
 
 ## ClickHouse environment
 
-Used only with `--storage=clickhouse`. Authentication is by client
+Used only with `--logs-storage=clickhouse`. Authentication is by client
 certificate, not password, matching `clickhouse-migrate`.
 
 | Env var | Default |
@@ -194,8 +204,8 @@ hostnames and customer identifiers. The `telemetry.miloapis.com-viewer` role
 ([`config/operator/iam/`](../config/operator/iam/)) grants both the queryapi
 route permissions and the proxy permissions (`logs/api.get`, `metrics/v1.get`
 and `metrics/v1.create`).
-The metrics routes return 501 today and are gated anyway, so they cannot ship
-unguarded.
+The metrics routes are gated the same way as the log routes, so they cannot
+ship unguarded.
 
 The split is only enforceable here, not at the aggregator, so a metadata-only
 role depends on queryapi's check holding rather than on Milo refusing the

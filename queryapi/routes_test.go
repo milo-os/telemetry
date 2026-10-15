@@ -119,7 +119,7 @@ func TestCanonicalPathPreservesQuery(t *testing.T) {
 // comes back as a non-resource request, which authz's guard denies and which
 // the tenant mux would answer 404 anyway.
 func TestRequestInfoResolverIsFailClosed(t *testing.T) {
-	router, err := newRouter(slog.New(slog.DiscardHandler), fake.New(2), DefaultConfig())
+	router, err := newRouter(slog.New(slog.DiscardHandler), fake.NewLogStore(2), fake.NewMetricStore(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("newRouter: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestRequestInfoResolverIsFailClosed(t *testing.T) {
 // against are resolved by the framework's own resolver, which is what that
 // flag matches on.
 func TestRequestInfoResolverDelegatesOutsideTheGroup(t *testing.T) {
-	router, err := newRouter(slog.New(slog.DiscardHandler), fake.New(2), DefaultConfig())
+	router, err := newRouter(slog.New(slog.DiscardHandler), fake.NewLogStore(2), fake.NewMetricStore(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("newRouter: %v", err)
 	}

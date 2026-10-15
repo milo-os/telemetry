@@ -88,7 +88,7 @@ func TestAggregatorPermissionsAreDeclaredAndGranted(t *testing.T) {
 	readYAML(t, filepath.Join(iamDir, "roles", "telemetry-viewer.yaml"), &viewer)
 	granted := sets.New(viewer.Spec.IncludedPermissions...)
 
-	router, err := newRouter(slog.New(slog.DiscardHandler), fake.New(1), DefaultConfig())
+	router, err := newRouter(slog.New(slog.DiscardHandler), fake.NewLogStore(1), fake.NewMetricStore(), DefaultConfig())
 	if err != nil {
 		t.Fatalf("newRouter: %v", err)
 	}
