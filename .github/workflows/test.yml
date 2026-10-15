@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.module }})
+    name: Test (${{ matrix.module }}${{ matrix.suite && format(' {0}', matrix.suite) || '' }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -27,6 +27,9 @@ jobs:
             test-cmd: go test ./...
           - module: queryapi
             test-cmd: task test
+          - module: queryapi
+            suite: integration-prometheus
+            test-cmd: task test-integration-prometheus
           - module: cli
             test-cmd: go test -race ./...
     steps:
