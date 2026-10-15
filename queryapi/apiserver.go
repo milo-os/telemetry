@@ -26,9 +26,10 @@ const kubeVersion = "1.34"
 
 // ExtraConfig is everything the generic apiserver knows nothing about.
 type ExtraConfig struct {
-	Logger *slog.Logger
-	Store  storage.LogStore
-	Query  Config
+	Logger  *slog.Logger
+	Store   storage.LogStore
+	Metrics storage.MetricStore
+	Query   Config
 }
 
 // ServerConfig combines the generic apiserver configuration with queryapi's.
@@ -78,11 +79,14 @@ func (c *ServerConfig) Complete() (CompletedServerConfig, error) {
 	if c.Extra.Store == nil {
 		return CompletedServerConfig{}, fmt.Errorf("a storage backend is required")
 	}
+	if c.Extra.Metrics == nil {
+		return CompletedServerConfig{}, fmt.Errorf("no metric store configured")
+	}
 	if c.Extra.Logger == nil {
 		return CompletedServerConfig{}, fmt.Errorf("a logger is required")
 	}
 
-	router, err := newRouter(c.Extra.Logger, c.Extra.Store, c.Extra.Query)
+	router, err := newRouter(c.Extra.Logger, c.Extra.Store, c.Extra.Metrics, c.Extra.Query)
 	if err != nil {
 		return CompletedServerConfig{}, err
 	}
@@ -142,8 +146,11 @@ func (c CompletedServerConfig) New() (*Server, error) {
 	// The framework serves /readyz; this is the check that used to be a
 	// hand-registered route. /healthz and /livez stay independent of storage,
 	// or an outage that only makes queries fail would also restart the pod.
-	if err := generic.AddReadyzChecks(storageReady(c.extra.Store, c.extra.Query.QueryTimeout)); err != nil {
-		return nil, fmt.Errorf("register the storage readiness check: %w", err)
+	if err := generic.AddReadyzChecks(
+		storageReady("storage", c.extra.Store, c.extra.Query.QueryTimeout),
+		storageReady("metrics-storage", c.extra.Metrics, c.extra.Query.QueryTimeout),
+	); err != nil {
+		return nil, fmt.Errorf("register the storage readiness checks: %w", err)
 	}
 
 	return s, nil

@@ -26,6 +26,7 @@ import (
 	"go.datum.net/o11y/queryapi"
 	"go.datum.net/o11y/queryapi/internal/authz"
 	"go.datum.net/o11y/queryapi/internal/storage"
+	"go.datum.net/o11y/queryapi/internal/storage/fake"
 )
 
 // testAuthenticator reads the X-Remote-* headers Milo's aggregator sets, the
@@ -151,6 +152,14 @@ func withAuthorizer(delegate authorizer.Authorizer) deps {
 // request info resolver and the authorization chain are the real ones.
 func serve(t *testing.T, store storage.LogStore, cfg queryapi.Config, d deps) *httptest.Server {
 	t.Helper()
+	return serveWithMetrics(t, store, fake.NewMetrics(), cfg, d)
+}
+
+// serveWithMetrics is serve with a chosen metric store.
+func serveWithMetrics(
+	t *testing.T, store storage.LogStore, metrics storage.MetricStore, cfg queryapi.Config, d deps,
+) *httptest.Server {
+	t.Helper()
 
 	generic := queryapi.NewGenericConfig()
 	// A real process gets both of these from the secure listener it opened.
@@ -164,9 +173,10 @@ func serve(t *testing.T, store storage.LogStore, cfg queryapi.Config, d deps) *h
 	serverConfig := &queryapi.ServerConfig{
 		Generic: generic,
 		Extra: queryapi.ExtraConfig{
-			Logger: slog.New(slog.DiscardHandler),
-			Store:  store,
-			Query:  cfg,
+			Logger:  slog.New(slog.DiscardHandler),
+			Store:   store,
+			Metrics: metrics,
+			Query:   cfg,
 		},
 	}
 	completed, err := serverConfig.Complete()

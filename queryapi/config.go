@@ -21,6 +21,9 @@ type Config struct {
 	// QueryTimeout bounds a single storage call, and the /readyz ping.
 	QueryTimeout time.Duration
 
+	// MaxRange bounds a query_range window.
+	MaxRange time.Duration
+
 	// DefaultLimit and MaxLimit bound returned rows. Requests above MaxLimit
 	// are clamped, not rejected, matching Loki.
 	DefaultLimit int
@@ -33,6 +36,7 @@ func DefaultConfig() Config {
 		LogsStorage:  "fake",
 		FakeRate:     2,
 		QueryTimeout: 30 * time.Second,
+		MaxRange:     31 * 24 * time.Hour,
 		DefaultLimit: 100,
 		MaxLimit:     5000,
 	}
@@ -52,6 +56,9 @@ func (c Config) Validate() error {
 	}
 	if c.QueryTimeout <= 0 {
 		errs = append(errs, fmt.Errorf("query-timeout must be greater than zero, got %s", c.QueryTimeout))
+	}
+	if c.MaxRange <= 0 {
+		errs = append(errs, fmt.Errorf("max-range must be greater than zero, got %s", c.MaxRange))
 	}
 	return errors.Join(errs...)
 }

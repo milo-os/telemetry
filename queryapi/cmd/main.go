@@ -51,7 +51,7 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("configure storage: %w", err)
 	}
 
-	cfg, err := opts.Config(logger, store)
+	cfg, err := opts.Config(logger, store, fake.NewMetrics())
 	if err != nil {
 		return err
 	}

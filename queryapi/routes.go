@@ -45,8 +45,8 @@ type router struct {
 }
 
 // newRouter builds the tenant mux.
-func newRouter(logger *slog.Logger, store storage.LogStore, cfg Config) (*router, error) {
-	h := &handler{logger: logger, store: store, cfg: cfg}
+func newRouter(logger *slog.Logger, store storage.LogStore, metrics storage.MetricStore, cfg Config) (*router, error) {
+	h := &handler{logger: logger, store: store, metrics: metrics, cfg: cfg}
 
 	// Log endpoints mimic Loki's HTTP API, metric endpoints Prometheus's.
 	// /logs and /metrics scope each signal to its own resource segment, which

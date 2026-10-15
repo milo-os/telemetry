@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3filter"
@@ -38,7 +39,6 @@ func forwardIdentity(req *http.Request) {
 
 // authorizedRoutes is every route the router registers, with the status it
 // answers once the caller is authorized and the permission it is reviewed for.
-// The metrics handlers are stubs, hence the 501s -- they are gated all the same.
 var authorizedRoutes = []struct {
 	name    string
 	method  string
@@ -67,24 +67,24 @@ var authorizedRoutes = []struct {
 		http.StatusOK, authz.Permission{Resource: "logs", Verb: "getSeries"},
 	},
 	{
-		"prom query", http.MethodPost, "/metrics/api/v1/query",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "query"},
+		"prom query", http.MethodPost, "/metrics/api/v1/query?query=up",
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "query"},
 	},
 	{
-		"prom query_range", http.MethodPost, "/metrics/api/v1/query_range",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "query"},
+		"prom query_range", http.MethodPost, "/metrics/api/v1/query_range?query=up&start=0&end=60&step=15",
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "query"},
 	},
 	{
 		"prom labels", http.MethodGet, "/metrics/api/v1/labels",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "getLabels"},
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "getLabels"},
 	},
 	{
 		"prom label values", http.MethodGet, "/metrics/api/v1/label/service/values",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "getLabels"},
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "getLabels"},
 	},
 	{
-		"prom series", http.MethodGet, "/metrics/api/v1/series",
-		http.StatusNotImplemented, authz.Permission{Resource: "metrics", Verb: "getSeries"},
+		"prom series", http.MethodGet, "/metrics/api/v1/series?match[]=up",
+		http.StatusOK, authz.Permission{Resource: "metrics", Verb: "getSeries"},
 	},
 }
 
@@ -208,13 +208,35 @@ func TestNilAuthorizerIsRefused(t *testing.T) {
 	_, err := (&queryapi.ServerConfig{
 		Generic: generic,
 		Extra: queryapi.ExtraConfig{
+			Logger:  discardLogger(),
+			Store:   fake.New(2),
+			Metrics: fake.NewMetrics(),
+			Query:   queryapi.DefaultConfig(),
+		},
+	}).Complete()
+	if err == nil || !strings.Contains(err.Error(), "an authorizer is required") {
+		t.Fatalf("Complete() error = %v, want the authorizer refusal", err)
+	}
+}
+
+// TestNilMetricStoreIsRefused pins that the server cannot be assembled
+// without a metric store.
+func TestNilMetricStoreIsRefused(t *testing.T) {
+	generic := queryapi.NewGenericConfig()
+	generic.ExternalAddress = "queryapi.test:443"
+	generic.Authentication.Authenticator = testAuthenticator()
+	generic.Authorization.Authorizer = allowAll().authz
+
+	_, err := (&queryapi.ServerConfig{
+		Generic: generic,
+		Extra: queryapi.ExtraConfig{
 			Logger: discardLogger(),
 			Store:  fake.New(2),
 			Query:  queryapi.DefaultConfig(),
 		},
 	}).Complete()
-	if err == nil {
-		t.Fatal("Complete() = nil error, want a refusal to build a server with no authorizer")
+	if err == nil || !strings.Contains(err.Error(), "no metric store configured") {
+		t.Fatalf("Complete() error = %v, want the metric store refusal", err)
 	}
 }
 

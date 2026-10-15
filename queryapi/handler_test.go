@@ -668,6 +668,37 @@ func TestReadyzReportsStorageUnavailable(t *testing.T) {
 	}
 }
 
+// TestReadyzReportsMetricsStorageUnavailable is the metrics counterpart: the
+// metric backend alone failing takes /readyz down and leaves liveness up.
+func TestReadyzReportsMetricsStorageUnavailable(t *testing.T) {
+	srv := serveWithMetrics(t, fake.New(2), &unreachableMetrics{Metrics: fake.NewMetrics()},
+		queryapi.DefaultConfig(), allowAll())
+
+	code, body := doBody(t, srv, http.MethodGet, "/readyz", nil)
+	if code != http.StatusInternalServerError {
+		t.Errorf("/readyz status = %d, want 500: %s", code, body)
+	}
+	if !strings.Contains(string(body), "[-]metrics-storage failed") {
+		t.Errorf("/readyz body = %s, want the metrics-storage check to be the one that failed", body)
+	}
+	if strings.Contains(string(body), "[-]storage failed") {
+		t.Errorf("/readyz body = %s, log storage should be healthy", body)
+	}
+	if code, _ := doBody(t, srv, http.MethodGet, "/livez", nil); code != http.StatusOK {
+		t.Errorf("/livez status = %d, want 200", code)
+	}
+	if code, _ := doBody(t, srv, http.MethodGet, "/healthz", nil); code != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200", code)
+	}
+}
+
+// unreachableMetrics fails Ping so the metrics readiness check actually fails.
+type unreachableMetrics struct{ *fake.Metrics }
+
+func (*unreachableMetrics) Ping(context.Context) error { return errors.New("dial: connection refused") }
+
+var _ storage.MetricStore = (*unreachableMetrics)(nil)
+
 // unreachableStore fails Ping so the readiness check actually fails.
 type unreachableStore struct{ recordingStore }
 

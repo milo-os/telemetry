@@ -103,6 +103,7 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 		"synthetic log lines per second (fake backend)")
 	fs.DurationVar(&o.Query.QueryTimeout, "query-timeout", o.Query.QueryTimeout,
 		"maximum duration of a single storage query")
+	fs.DurationVar(&o.Query.MaxRange, "max-range", o.Query.MaxRange, "longest query_range window")
 	fs.IntVar(&o.Query.DefaultLimit, "default-limit", o.Query.DefaultLimit, "default maximum log lines returned")
 	fs.IntVar(&o.Query.MaxLimit, "max-limit", o.Query.MaxLimit, "hard ceiling on log lines returned")
 
@@ -138,7 +139,7 @@ func (o *Options) Validate() error {
 }
 
 // Config assembles the server configuration.
-func (o *Options) Config(logger *slog.Logger, store storage.LogStore) (*ServerConfig, error) {
+func (o *Options) Config(logger *slog.Logger, logs storage.LogStore, metrics storage.MetricStore) (*ServerConfig, error) {
 	// With no --tls-cert-file the apiserver convention is to self-sign into
 	// --cert-dir. That is the local-development path only: in the cluster the
 	// serving certificate comes from the cert-manager CSI driver
@@ -165,6 +166,6 @@ func (o *Options) Config(logger *slog.Logger, store storage.LogStore) (*ServerCo
 
 	return &ServerConfig{
 		Generic: generic,
-		Extra:   ExtraConfig{Logger: logger, Store: store, Query: o.Query},
+		Extra:   ExtraConfig{Logger: logger, Store: logs, Metrics: metrics, Query: o.Query},
 	}, nil
 }

@@ -21,9 +21,10 @@ import (
 )
 
 type handler struct {
-	logger *slog.Logger
-	store  storage.LogStore
-	cfg    Config
+	logger  *slog.Logger
+	store   storage.LogStore
+	metrics storage.MetricStore
+	cfg     Config
 }
 
 // parseLogQL parses raw, writing a 400 and returning false on failure.
@@ -201,26 +202,6 @@ func (h *handler) lokiSeries(w http.ResponseWriter, r *http.Request) {
 	writeData(w, out)
 }
 
-func (h *handler) promQuery(w http.ResponseWriter, _ *http.Request) {
-	writeNotImplemented(w, "promQuery")
-}
-
-func (h *handler) promQueryRange(w http.ResponseWriter, _ *http.Request) {
-	writeNotImplemented(w, "promQueryRange")
-}
-
-func (h *handler) promSeries(w http.ResponseWriter, _ *http.Request) {
-	writeNotImplemented(w, "promSeries")
-}
-
-func (h *handler) promLabelNames(w http.ResponseWriter, _ *http.Request) {
-	writeNotImplemented(w, "promLabelNames")
-}
-
-func (h *handler) promLabelValues(w http.ResponseWriter, _ *http.Request) {
-	writeNotImplemented(w, "promLabelValues")
-}
-
 func orEmpty(values []string) []string {
 	if values == nil {
 		return []string{}
@@ -247,10 +228,6 @@ func (h *handler) writeStorageError(w http.ResponseWriter, err error) {
 		h.logger.Error("storage query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
-}
-
-func writeNotImplemented(w http.ResponseWriter, op string) {
-	writeError(w, http.StatusNotImplemented, op+" is not yet implemented")
 }
 
 // writeError writes the Loki/Prometheus-style error envelope openapi.yaml's
