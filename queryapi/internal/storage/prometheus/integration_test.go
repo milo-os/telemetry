@@ -152,7 +152,7 @@ func TestStoreAgainstVictoriaMetrics(t *testing.T) {
 		t.Errorf("portal query: resultType %q, err %v", r.ResultType, err)
 	}
 
-	// Review focus 1: Grafana's health probe evaluates. VictoriaMetrics
+	// Grafana's health probe evaluates. VictoriaMetrics
 	// answers a scalar expression as a vector, not a scalar.
 	if err := json.Unmarshal(query("1+1"), &r); err != nil || r.ResultType != "vector" {
 		t.Errorf("1+1: resultType %q, err %v; want vector", r.ResultType, err)
@@ -170,6 +170,32 @@ func TestStoreAgainstVictoriaMetrics(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &mat); err != nil || len(mat.Result) != 1 || mat.Result[0].Metric[label] != "proj-a" {
 		t.Errorf("range: %s (%v), want exactly proj-a's series", raw, err)
+	}
+
+	// Cache carry-over: with VictoriaMetrics' rollup cache on, a range
+	// result computed for proj-b must not be served to proj-a.
+	rangeFor := func(project, q string) string {
+		t.Helper()
+		raw, err := s.QueryRange(miloauth.WithProject(context.Background(), project),
+			storage.RangeQuery{Query: q, Range: tr, Step: 30 * time.Second})
+		if err != nil {
+			t.Fatalf("QueryRange(%s, %s): %v", project, q, err)
+		}
+		return string(raw)
+	}
+	for _, q := range []string{`{__name__=~"queryapi_it_.+"}`, "sum(" + itMetric + ")"} {
+		b1 := rangeFor("proj-b", q)
+		a1 := rangeFor("proj-a", q)
+		b2 := rangeFor("proj-b", q)
+		if !strings.Contains(b1, "proj-b") && !strings.Contains(b1, `"4000"`) {
+			t.Errorf("%s: proj-b result has no proj-b data (vacuous check): %s", q, b1)
+		}
+		if strings.Contains(a1, "proj-b") || strings.Contains(a1, "only_b") || strings.Contains(a1, `"4000"`) {
+			t.Errorf("%s: proj-a result carries proj-b data: %s", q, a1)
+		}
+		if strings.Contains(b2, "proj-a") || strings.Contains(b2, "only_a") {
+			t.Errorf("%s: proj-b result carries proj-a data: %s", q, b2)
+		}
 	}
 
 	// Series.

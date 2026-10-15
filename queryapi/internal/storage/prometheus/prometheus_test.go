@@ -153,9 +153,20 @@ func TestBackendResponses(t *testing.T) {
 			var qe *storage.QueryError
 			return errors.As(err, &qe)
 		}},
-		// Review focus 3: a proxy's HTML is not a query error.
+		// A proxy's HTML is not a query error.
 		{"html 400", 400, `<html>bad request</html>`, func(err error) bool { return errors.Is(err, storage.ErrBackendUnavailable) }},
 		{"html 502", 502, `<html>bad gateway</html>`, func(err error) bool { return errors.Is(err, storage.ErrBackendUnavailable) }},
+		// Observed from victoria-metrics v1.114.0 with timeout=1ms.
+		{"timeout (VictoriaMetrics, real)", 422, `{"status":"error","errorType":"422","error":"timeout exceeded during query execution: 0.001 seconds (elapsed 1.128 seconds); the timeout can be adjusted with ` + "`-search.maxQueryDuration`" + ` command-line flag"}`, func(err error) bool {
+			var qe *storage.QueryError
+			return errors.Is(err, context.DeadlineExceeded) && !errors.As(err, &qe)
+		}},
+		{"timeout (503, errorType 503)", 503, `{"status":"error","errorType":"503","error":"timeout exceeded during query execution: 30 seconds"}`, func(err error) bool {
+			return errors.Is(err, context.DeadlineExceeded)
+		}},
+		{"503 not a timeout", 503, `{"status":"error","errorType":"503","error":"couldn't start executing the request in 10s: too many concurrent requests"}`, func(err error) bool {
+			return errors.Is(err, storage.ErrBackendUnavailable) && !errors.Is(err, context.DeadlineExceeded)
+		}},
 		{"timeout", 503, `{"status":"error","errorType":"timeout","error":"query timed out"}`, func(err error) bool {
 			return errors.Is(err, context.DeadlineExceeded)
 		}},
@@ -196,7 +207,7 @@ func TestUnreachableAndDeadline(t *testing.T) {
 	}
 }
 
-// Review focus 5: long queries travel in the body intact.
+// Long queries travel in the body intact.
 func TestLongQueryArrivesIntact(t *testing.T) {
 	srv, reqs := backend(t, 200, ok)
 	q := "sum(" + strings.Repeat(`up{job="a"} + `, 1200) + "up)"
@@ -211,7 +222,7 @@ func TestLongQueryArrivesIntact(t *testing.T) {
 	}
 }
 
-// Review focus 4: a label name that isn't one never reaches the backend.
+// A label name that isn't one never reaches the backend.
 func TestInvalidLabelNameSendsNothing(t *testing.T) {
 	srv, reqs := backend(t, 200, ok)
 	_, err := newStore(t, srv.URL).LabelValues(projCtx, "a/b", nil, storage.TimeRange{})

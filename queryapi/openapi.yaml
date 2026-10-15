@@ -705,27 +705,6 @@ components:
         timeout:
           type: string
 
-    PromVectorResult:
-      type: object
-      required: [metric, value]
-      properties:
-        metric:
-          type: object
-          additionalProperties:
-            type: string
-          description: Label set for this series, including __name__.
-        value:
-          type: array
-          description: >-
-            [unixTimestamp, stringValue] — a single sample, matching
-            Prometheus's "vector" result type for instant queries.
-          items:
-            oneOf:
-              - type: number
-              - type: string
-          minItems: 2
-          maxItems: 2
-
     PromMatrixResult:
       type: object
       required: [metric, values]

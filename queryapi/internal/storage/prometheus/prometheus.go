@@ -191,7 +191,13 @@ func (s *Store) do(ctx context.Context, path, route string, form url.Values) (da
 	if int64(len(body)) > s.cfg.MaxResponseBytes {
 		return nil, storage.ErrResponseTooLarge
 	}
-	return decode(resp.StatusCode, body)
+	data, err = decode(resp.StatusCode, body)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+	}
+	return data, err
 }
 
 type envelope struct {
@@ -207,15 +213,22 @@ func decode(status int, body []byte) (json.RawMessage, error) {
 	var env envelope
 	isEnvelope := json.Unmarshal(body, &env) == nil && env.Status != ""
 	switch {
+	case isEnvelope && (status == http.StatusUnprocessableEntity || status == http.StatusServiceUnavailable) && isTimeout(env):
+		return nil, fmt.Errorf("%w: %s", context.DeadlineExceeded, env.Error)
 	case status == http.StatusOK && isEnvelope && env.Status == "success" && len(env.Data) > 0:
 		return env.Data, nil
 	case (status == http.StatusBadRequest || status == http.StatusUnprocessableEntity) && isEnvelope && env.Error != "":
 		return nil, &storage.QueryError{Message: env.Error}
-	case status == http.StatusServiceUnavailable && isEnvelope && env.ErrorType == "timeout":
-		return nil, fmt.Errorf("%w: %s", context.DeadlineExceeded, env.Error)
 	default:
 		return nil, fmt.Errorf("%w: status %d: %.512s", storage.ErrBackendUnavailable, status, body)
 	}
+}
+
+// isTimeout recognises a backend query timeout. Prometheus sends errorType
+// "timeout"; VictoriaMetrics sends the HTTP status as errorType (observed
+// 422) and says "timeout exceeded during query execution".
+func isTimeout(env envelope) bool {
+	return env.ErrorType == "timeout" || strings.Contains(env.Error, "timeout exceeded")
 }
 
 func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }

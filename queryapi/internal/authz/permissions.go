@@ -42,8 +42,8 @@ type Permission struct {
 // identifiers, which reading log lines does not necessarily imply, and that
 // boundary cannot be retrofitted once a single action covers both.
 //
-// The metrics handlers return 501 today. Gating a stub costs nothing and keeps
-// the endpoint from shipping unguarded later.
+// The metrics handlers are gated like the log handlers, so no endpoint ships
+// unguarded.
 var Permissions = map[Permission]struct{}{
 	{Resource: "logs", Verb: "query"}:        {},
 	{Resource: "logs", Verb: "getLabels"}:    {},

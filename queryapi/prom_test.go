@@ -176,7 +176,7 @@ func TestPromBadRequests(t *testing.T) {
 	}
 }
 
-// Review focus 4: an escaped slash decodes to "a/b" in the path value. The
+// An escaped slash decodes to "a/b" in the path value. The
 // apiserver's filters may refuse it before the handler does, so any 4xx
 // passes; reaching the store does not.
 func TestPromLabelNameWithSlashNeverReachesTheStore(t *testing.T) {
@@ -228,7 +228,7 @@ func TestPromSelectorsAndLabelNames(t *testing.T) {
 	}
 }
 
-// Review focus 1: scalar, string and matrix results pass through unchanged.
+// Scalar, string and matrix results pass through unchanged.
 func TestPromDataPassesThroughUnchanged(t *testing.T) {
 	for _, data := range []string{
 		`{"resultType":"scalar","result":[1760400000,"2"]}`,

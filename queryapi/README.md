@@ -204,8 +204,8 @@ hostnames and customer identifiers. The `telemetry.miloapis.com-viewer` role
 ([`config/operator/iam/`](../config/operator/iam/)) grants both the queryapi
 route permissions and the proxy permissions (`logs/api.get`, `metrics/v1.get`
 and `metrics/v1.create`).
-The metrics routes return 501 today and are gated anyway, so they cannot ship
-unguarded.
+The metrics routes are gated the same way as the log routes, so they cannot
+ship unguarded.
 
 The split is only enforceable here, not at the aggregator, so a metadata-only
 role depends on queryapi's check holding rather than on Milo refusing the
