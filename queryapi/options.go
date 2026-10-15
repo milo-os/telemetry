@@ -96,6 +96,16 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	o.Recommended.AddFlags(fs)
 
 	fs.StringVar(&o.Query.LogsStorage, "logs-storage", o.Query.LogsStorage, "log storage backend: fake or clickhouse")
+	fs.StringVar(&o.Query.MetricsStorage, "metrics-storage", o.Query.MetricsStorage, "metric storage backend: fake or prometheus")
+	fs.StringVar(&o.Query.PrometheusURL, "prometheus-url", o.Query.PrometheusURL,
+		"base URL of the Prometheus-compatible query API")
+	fs.StringVar(&o.Query.PrometheusTenancy, "prometheus-tenancy", o.Query.PrometheusTenancy,
+		"how the backend confines a query to the caller's project; the only mode is extra-label, "+
+			"which requires VictoriaMetrics or another server that honors extra_label")
+	fs.StringVar(&o.Query.PrometheusProjectLabel, "prometheus-project-label", o.Query.PrometheusProjectLabel,
+		"label the tenancy mode constrains to the caller's project")
+	fs.Int64Var(&o.Query.MaxResponseBytes, "max-response-bytes", o.Query.MaxResponseBytes,
+		"largest metric backend response accepted, in bytes")
 	fs.StringVar(&o.legacyStorage, "storage", "", "deprecated alias for --logs-storage")
 	_ = fs.MarkDeprecated("storage", "use --logs-storage; --storage is removed in the next release")
 	o.flags = fs

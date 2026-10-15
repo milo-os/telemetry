@@ -20,6 +20,7 @@ import (
 	"go.datum.net/o11y/queryapi/internal/storage"
 	"go.datum.net/o11y/queryapi/internal/storage/clickhouse"
 	"go.datum.net/o11y/queryapi/internal/storage/fake"
+	"go.datum.net/o11y/queryapi/internal/storage/prometheus"
 )
 
 func main() {
@@ -51,7 +52,12 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("configure storage: %w", err)
 	}
 
-	cfg, err := opts.Config(logger, store, fake.NewMetrics())
+	metrics, err := newMetricStore(opts.Query)
+	if err != nil {
+		return fmt.Errorf("configure metrics storage: %w", err)
+	}
+
+	cfg, err := opts.Config(logger, store, metrics)
 	if err != nil {
 		return err
 	}
@@ -84,5 +90,26 @@ func newLogStore(cfg queryapi.Config) (storage.LogStore, error) {
 		return clickhouse.New(chCfg)
 	default:
 		return nil, fmt.Errorf("unknown storage backend %q", cfg.LogsStorage)
+	}
+}
+
+// newMetricStore builds the configured metric backend.
+func newMetricStore(cfg queryapi.Config) (storage.MetricStore, error) {
+	switch cfg.MetricsStorage {
+	case "fake":
+		return fake.NewMetrics(), nil
+	case "prometheus":
+		tenancy, err := prometheus.ParseTenancy(cfg.PrometheusTenancy)
+		if err != nil {
+			return nil, err
+		}
+		return prometheus.New(prometheus.Config{
+			URL:              cfg.PrometheusURL,
+			Tenancy:          tenancy,
+			ProjectLabel:     cfg.PrometheusProjectLabel,
+			MaxResponseBytes: cfg.MaxResponseBytes,
+		})
+	default:
+		return nil, fmt.Errorf("unknown metrics storage backend %q", cfg.MetricsStorage)
 	}
 }

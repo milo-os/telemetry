@@ -44,7 +44,10 @@ permissions, not collections.
 | `fake` (default) | Deterministic synthetic logs, a pure function of the query's time range. Same range always returns the same rows. |
 | `clickhouse` | Serves log queries and label/stream discovery against the `o11y.logs` schema via LogQL-to-SQL translation. `/readyz` pings the backend. |
 
-Metric (Prometheus-shaped) endpoints return 501 on both backends.
+| `--metrics-storage` | Behaviour |
+| --- | --- |
+| `fake` (default) | One synthetic series, `fake_up`, for the caller's project. |
+| `prometheus` | Any Prometheus query API backend, confined to the caller's project by `--prometheus-tenancy`. |
 
 ## Flags
 
@@ -73,6 +76,12 @@ them without restating the rest. See [Deployment](#deployment).
 | `--authorization-webhook-cache-unauthorized-ttl` | `10s` |
 | `--logs-storage` | `fake` |
 | `--storage` | deprecated alias for `--logs-storage`; removed in the next release |
+| `--metrics-storage` | `fake` |
+| `--prometheus-url` | none; required with `--metrics-storage=prometheus` |
+| `--prometheus-tenancy` | none; required with `--metrics-storage=prometheus`. The only mode is `extra-label`, which requires VictoriaMetrics |
+| `--prometheus-project-label` | `resourcemanager_datumapis_com_project_name` |
+| `--max-response-bytes` | `33554432` (32 MiB) |
+| `--max-range` | `744h` |
 | `--fake-rate` | `2` (lines/sec) |
 | `--query-timeout` | `30s` |
 | `--default-limit` | `100` |
