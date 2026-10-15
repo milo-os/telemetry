@@ -149,7 +149,7 @@ func (o *Options) Validate() error {
 }
 
 // Config assembles the server configuration.
-func (o *Options) Config(logger *slog.Logger, logs storage.LogStore, metrics storage.MetricStore) (*ServerConfig, error) {
+func (o *Options) Config(logger *slog.Logger, logStore storage.LogStore, metricStore storage.MetricStore) (*ServerConfig, error) {
 	// With no --tls-cert-file the apiserver convention is to self-sign into
 	// --cert-dir. That is the local-development path only: in the cluster the
 	// serving certificate comes from the cert-manager CSI driver
@@ -176,6 +176,6 @@ func (o *Options) Config(logger *slog.Logger, logs storage.LogStore, metrics sto
 
 	return &ServerConfig{
 		Generic: generic,
-		Extra:   ExtraConfig{Logger: logger, Store: logs, Metrics: metrics, Query: o.Query},
+		Extra:   ExtraConfig{Logger: logger, LogStore: logStore, MetricStore: metricStore, Query: o.Query},
 	}, nil
 }

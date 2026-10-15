@@ -150,14 +150,14 @@ func withAuthorizer(delegate authorizer.Authorizer) deps {
 // exactly one thing, the front proxy's client certificate check, which
 // testAuthenticator stands in for; every other filter, the route table, the
 // request info resolver and the authorization chain are the real ones.
-func serve(t *testing.T, store storage.LogStore, cfg queryapi.Config, d deps) *httptest.Server {
+func serve(t *testing.T, logStore storage.LogStore, cfg queryapi.Config, d deps) *httptest.Server {
 	t.Helper()
-	return serveWithMetrics(t, store, fake.NewMetrics(), cfg, d)
+	return serveWithMetricStore(t, logStore, fake.NewMetricStore(), cfg, d)
 }
 
-// serveWithMetrics is serve with a chosen metric store.
-func serveWithMetrics(
-	t *testing.T, store storage.LogStore, metrics storage.MetricStore, cfg queryapi.Config, d deps,
+// serveWithMetricStore is serve with a chosen metric store.
+func serveWithMetricStore(
+	t *testing.T, logStore storage.LogStore, metricStore storage.MetricStore, cfg queryapi.Config, d deps,
 ) *httptest.Server {
 	t.Helper()
 
@@ -173,10 +173,10 @@ func serveWithMetrics(
 	serverConfig := &queryapi.ServerConfig{
 		Generic: generic,
 		Extra: queryapi.ExtraConfig{
-			Logger:  slog.New(slog.DiscardHandler),
-			Store:   store,
-			Metrics: metrics,
-			Query:   cfg,
+			Logger:      slog.New(slog.DiscardHandler),
+			LogStore:    logStore,
+			MetricStore: metricStore,
+			Query:       cfg,
 		},
 	}
 	completed, err := serverConfig.Complete()

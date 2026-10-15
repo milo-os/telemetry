@@ -21,10 +21,10 @@ import (
 )
 
 type handler struct {
-	logger  *slog.Logger
-	store   storage.LogStore
-	metrics storage.MetricStore
-	cfg     Config
+	logger      *slog.Logger
+	logStore    storage.LogStore
+	metricStore storage.MetricStore
+	cfg         Config
 }
 
 // parseLogQL parses raw, writing a 400 and returning false on failure.
@@ -105,7 +105,7 @@ func (h *handler) serveLogs(w http.ResponseWriter, r *http.Request, q *logql.Que
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
 
-	iter, err := h.store.QueryLogs(ctx, storage.LogQuery{
+	iter, err := h.logStore.QueryLogs(ctx, storage.LogQuery{
 		Matchers:  q.Matchers,
 		Filters:   q.Filters,
 		Range:     tr,
@@ -133,7 +133,7 @@ func (h *handler) lokiLabelNames(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
 
-	names, err := h.store.LabelNames(ctx, tr)
+	names, err := h.logStore.LabelNames(ctx, tr)
 	if err != nil {
 		h.writeStorageError(w, err)
 		return
@@ -155,7 +155,7 @@ func (h *handler) lokiLabelValues(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
 
-	values, err := h.store.LabelValues(ctx, r.PathValue("name"), tr)
+	values, err := h.logStore.LabelValues(ctx, r.PathValue("name"), tr)
 	if err != nil {
 		h.writeStorageError(w, err)
 		return
@@ -187,7 +187,7 @@ func (h *handler) lokiSeries(w http.ResponseWriter, r *http.Request) {
 		if !ok {
 			return
 		}
-		series, err := h.store.Series(ctx, q.Matchers, tr)
+		series, err := h.logStore.Series(ctx, q.Matchers, tr)
 		if err != nil {
 			h.writeStorageError(w, err)
 			return

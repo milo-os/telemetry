@@ -50,20 +50,20 @@ var (
 	}
 )
 
-// Store is a synthetic storage.LogStore.
-type Store struct {
+// LogStore is a synthetic storage.LogStore.
+type LogStore struct {
 	interval time.Duration
 }
 
-// New returns a Store generating ratePerSecond lines per second.
-func New(ratePerSecond float64) *Store {
+// NewLogStore returns a LogStore generating ratePerSecond lines per second.
+func NewLogStore(ratePerSecond float64) *LogStore {
 	if ratePerSecond <= 0 {
 		ratePerSecond = 1
 	}
-	return &Store{interval: time.Duration(float64(time.Second) / ratePerSecond)}
+	return &LogStore{interval: time.Duration(float64(time.Second) / ratePerSecond)}
 }
 
-func (s *Store) QueryLogs(ctx context.Context, q storage.LogQuery) (storage.LogIterator, error) {
+func (s *LogStore) QueryLogs(ctx context.Context, q storage.LogQuery) (storage.LogIterator, error) {
 	if _, ok := miloauth.ProjectID(ctx); !ok {
 		return nil, storage.ErrNoProject
 	}
@@ -73,7 +73,7 @@ func (s *Store) QueryLogs(ctx context.Context, q storage.LogQuery) (storage.LogI
 	return newIterator(ctx, s.interval, q), nil
 }
 
-func (s *Store) LabelNames(ctx context.Context, _ storage.TimeRange) ([]string, error) {
+func (s *LogStore) LabelNames(ctx context.Context, _ storage.TimeRange) ([]string, error) {
 	if _, ok := miloauth.ProjectID(ctx); !ok {
 		return nil, storage.ErrNoProject
 	}
@@ -94,7 +94,7 @@ func (s *Store) LabelNames(ctx context.Context, _ storage.TimeRange) ([]string, 
 	return names, nil
 }
 
-func (s *Store) LabelValues(ctx context.Context, label string, _ storage.TimeRange) ([]string, error) {
+func (s *LogStore) LabelValues(ctx context.Context, label string, _ storage.TimeRange) ([]string, error) {
 	if _, ok := miloauth.ProjectID(ctx); !ok {
 		return nil, storage.ErrNoProject
 	}
@@ -113,7 +113,7 @@ func (s *Store) LabelValues(ctx context.Context, label string, _ storage.TimeRan
 	return values, nil
 }
 
-func (s *Store) Series(ctx context.Context, matchers []logql.LabelMatcher, _ storage.TimeRange) ([]storage.LabelSet, error) {
+func (s *LogStore) Series(ctx context.Context, matchers []logql.LabelMatcher, _ storage.TimeRange) ([]storage.LabelSet, error) {
 	if _, ok := miloauth.ProjectID(ctx); !ok {
 		return nil, storage.ErrNoProject
 	}
@@ -127,7 +127,7 @@ func (s *Store) Series(ctx context.Context, matchers []logql.LabelMatcher, _ sto
 	return out, nil
 }
 
-func (s *Store) Ping(context.Context) error { return nil }
+func (s *LogStore) Ping(context.Context) error { return nil }
 
 // catalogue is every label set the generator can produce. Discovery is served
 // from here rather than from generated rows, so it is instant and populates

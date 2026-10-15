@@ -97,7 +97,7 @@ func (h *handler) promQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
-	data, err := h.metrics.Query(ctx, storage.InstantQuery{Query: query, Time: at, Timeout: timeout})
+	data, err := h.metricStore.Query(ctx, storage.InstantQuery{Query: query, Time: at, Timeout: timeout})
 	h.writePromResult(w, data, err)
 }
 
@@ -141,7 +141,7 @@ func (h *handler) promQueryRange(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
-	data, err := h.metrics.QueryRange(ctx, storage.RangeQuery{Query: query, Range: tr, Step: step, Timeout: timeout})
+	data, err := h.metricStore.QueryRange(ctx, storage.RangeQuery{Query: query, Range: tr, Step: step, Timeout: timeout})
 	h.writePromResult(w, data, err)
 }
 
@@ -161,7 +161,7 @@ func (h *handler) promSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
-	data, err := h.metrics.Series(ctx, matchers, tr)
+	data, err := h.metricStore.Series(ctx, matchers, tr)
 	h.writePromResult(w, data, err)
 }
 
@@ -176,7 +176,7 @@ func (h *handler) promLabelNames(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
-	data, err := h.metrics.LabelNames(ctx, form["match[]"], tr)
+	data, err := h.metricStore.LabelNames(ctx, form["match[]"], tr)
 	h.writePromResult(w, data, err)
 }
 
@@ -196,7 +196,7 @@ func (h *handler) promLabelValues(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
-	data, err := h.metrics.LabelValues(ctx, name, form["match[]"], tr)
+	data, err := h.metricStore.LabelValues(ctx, name, form["match[]"], tr)
 	h.writePromResult(w, data, err)
 }
 

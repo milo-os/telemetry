@@ -16,17 +16,17 @@ const FakeMetric = "fake_up"
 
 const projectLabel = "resourcemanager_datumapis_com_project_name"
 
-// Metrics is a synthetic storage.MetricStore. It does not evaluate PromQL:
+// MetricStore is a synthetic storage.MetricStore. It does not evaluate PromQL:
 // every query answers with FakeMetric for the caller's project, so handler
 // and e2e tests get a well-formed Prometheus response.
-type Metrics struct{}
+type MetricStore struct{}
 
-// NewMetrics returns a fake metric store.
-func NewMetrics() *Metrics { return &Metrics{} }
+// NewMetricStore returns a fake metric store.
+func NewMetricStore() *MetricStore { return &MetricStore{} }
 
-var _ storage.MetricStore = (*Metrics)(nil)
+var _ storage.MetricStore = (*MetricStore)(nil)
 
-func (*Metrics) labels(ctx context.Context) (map[string]string, error) {
+func (*MetricStore) labels(ctx context.Context) (map[string]string, error) {
 	project, ok := miloauth.ProjectID(ctx)
 	if !ok {
 		return nil, storage.ErrNoProject
@@ -36,7 +36,7 @@ func (*Metrics) labels(ctx context.Context) (map[string]string, error) {
 
 func sample(t time.Time) []any { return []any{float64(t.UnixMilli()) / 1000, "1"} }
 
-func (m *Metrics) Query(ctx context.Context, q storage.InstantQuery) (json.RawMessage, error) {
+func (m *MetricStore) Query(ctx context.Context, q storage.InstantQuery) (json.RawMessage, error) {
 	ls, err := m.labels(ctx)
 	if err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (m *Metrics) Query(ctx context.Context, q storage.InstantQuery) (json.RawMe
 	})
 }
 
-func (m *Metrics) QueryRange(ctx context.Context, q storage.RangeQuery) (json.RawMessage, error) {
+func (m *MetricStore) QueryRange(ctx context.Context, q storage.RangeQuery) (json.RawMessage, error) {
 	ls, err := m.labels(ctx)
 	if err != nil {
 		return nil, err
@@ -62,7 +62,7 @@ func (m *Metrics) QueryRange(ctx context.Context, q storage.RangeQuery) (json.Ra
 	})
 }
 
-func (m *Metrics) Series(ctx context.Context, _ []string, _ storage.TimeRange) (json.RawMessage, error) {
+func (m *MetricStore) Series(ctx context.Context, _ []string, _ storage.TimeRange) (json.RawMessage, error) {
 	ls, err := m.labels(ctx)
 	if err != nil {
 		return nil, err
@@ -70,14 +70,14 @@ func (m *Metrics) Series(ctx context.Context, _ []string, _ storage.TimeRange) (
 	return json.Marshal([]map[string]string{ls})
 }
 
-func (m *Metrics) LabelNames(ctx context.Context, _ []string, _ storage.TimeRange) (json.RawMessage, error) {
+func (m *MetricStore) LabelNames(ctx context.Context, _ []string, _ storage.TimeRange) (json.RawMessage, error) {
 	if _, err := m.labels(ctx); err != nil {
 		return nil, err
 	}
 	return json.Marshal([]string{"__name__", projectLabel})
 }
 
-func (m *Metrics) LabelValues(ctx context.Context, name string, _ []string, _ storage.TimeRange) (json.RawMessage, error) {
+func (m *MetricStore) LabelValues(ctx context.Context, name string, _ []string, _ storage.TimeRange) (json.RawMessage, error) {
 	ls, err := m.labels(ctx)
 	if err != nil {
 		return nil, err
@@ -89,4 +89,4 @@ func (m *Metrics) LabelValues(ctx context.Context, name string, _ []string, _ st
 	return json.Marshal(values)
 }
 
-func (*Metrics) Ping(context.Context) error { return nil }
+func (*MetricStore) Ping(context.Context) error { return nil }

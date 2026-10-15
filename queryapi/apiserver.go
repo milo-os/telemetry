@@ -26,10 +26,10 @@ const kubeVersion = "1.34"
 
 // ExtraConfig is everything the generic apiserver knows nothing about.
 type ExtraConfig struct {
-	Logger  *slog.Logger
-	Store   storage.LogStore
-	Metrics storage.MetricStore
-	Query   Config
+	Logger      *slog.Logger
+	LogStore    storage.LogStore
+	MetricStore storage.MetricStore
+	Query       Config
 }
 
 // ServerConfig combines the generic apiserver configuration with queryapi's.
@@ -76,17 +76,17 @@ func NewGenericConfig() *genericapiserver.RecommendedConfig {
 // to stop the process, and there is no later point at which that is still a
 // startup failure rather than a caller's 403.
 func (c *ServerConfig) Complete() (CompletedServerConfig, error) {
-	if c.Extra.Store == nil {
+	if c.Extra.LogStore == nil {
 		return CompletedServerConfig{}, fmt.Errorf("a storage backend is required")
 	}
-	if c.Extra.Metrics == nil {
+	if c.Extra.MetricStore == nil {
 		return CompletedServerConfig{}, fmt.Errorf("no metric store configured")
 	}
 	if c.Extra.Logger == nil {
 		return CompletedServerConfig{}, fmt.Errorf("a logger is required")
 	}
 
-	router, err := newRouter(c.Extra.Logger, c.Extra.Store, c.Extra.Metrics, c.Extra.Query)
+	router, err := newRouter(c.Extra.Logger, c.Extra.LogStore, c.Extra.MetricStore, c.Extra.Query)
 	if err != nil {
 		return CompletedServerConfig{}, err
 	}
@@ -126,8 +126,8 @@ func (c *ServerConfig) Complete() (CompletedServerConfig, error) {
 type Server struct {
 	GenericAPIServer *genericapiserver.GenericAPIServer
 
-	logger *slog.Logger
-	store  storage.LogStore
+	logger   *slog.Logger
+	logStore storage.LogStore
 }
 
 // New builds the server and installs everything queryapi adds to the generic
@@ -139,7 +139,7 @@ func (c CompletedServerConfig) New() (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{GenericAPIServer: generic, logger: c.extra.Logger, store: c.extra.Store}
+	s := &Server{GenericAPIServer: generic, logger: c.extra.Logger, logStore: c.extra.LogStore}
 	s.installDiscovery()
 	s.installRoutes(c.extra.Logger, c.router)
 
@@ -147,8 +147,8 @@ func (c CompletedServerConfig) New() (*Server, error) {
 	// hand-registered route. /healthz and /livez stay independent of storage,
 	// or an outage that only makes queries fail would also restart the pod.
 	if err := generic.AddReadyzChecks(
-		storageReady("storage", c.extra.Store, c.extra.Query.QueryTimeout),
-		storageReady("metrics-storage", c.extra.Metrics, c.extra.Query.QueryTimeout),
+		storageReady("logs-storage", c.extra.LogStore, c.extra.Query.QueryTimeout),
+		storageReady("metrics-storage", c.extra.MetricStore, c.extra.Query.QueryTimeout),
 	); err != nil {
 		return nil, fmt.Errorf("register the storage readiness checks: %w", err)
 	}
@@ -215,7 +215,7 @@ func (s *Server) installRoutes(logger *slog.Logger, r *router) {
 // closing the storage backend.
 func (s *Server) Run(ctx context.Context) error {
 	defer func() {
-		closer, ok := s.store.(io.Closer)
+		closer, ok := s.logStore.(io.Closer)
 		if !ok {
 			return
 		}

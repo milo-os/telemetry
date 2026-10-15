@@ -19,9 +19,9 @@ import (
 	"go.datum.net/o11y/queryapi/internal/storage/fake"
 )
 
-// recordingMetrics records what each handler asked the store for and answers
+// recordingMetricStore records what each handler asked the store for and answers
 // with data or err.
-type recordingMetrics struct {
+type recordingMetricStore struct {
 	mu       sync.Mutex
 	data     json.RawMessage
 	err      error
@@ -32,7 +32,7 @@ type recordingMetrics struct {
 	calls    int
 }
 
-func (m *recordingMetrics) record(f func()) (json.RawMessage, error) {
+func (m *recordingMetricStore) record(f func()) (json.RawMessage, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls++
@@ -46,27 +46,27 @@ func (m *recordingMetrics) record(f func()) (json.RawMessage, error) {
 	return m.data, nil
 }
 
-func (m *recordingMetrics) Query(_ context.Context, q storage.InstantQuery) (json.RawMessage, error) {
+func (m *recordingMetricStore) Query(_ context.Context, q storage.InstantQuery) (json.RawMessage, error) {
 	return m.record(func() { m.instant = q })
 }
 
-func (m *recordingMetrics) QueryRange(_ context.Context, q storage.RangeQuery) (json.RawMessage, error) {
+func (m *recordingMetricStore) QueryRange(_ context.Context, q storage.RangeQuery) (json.RawMessage, error) {
 	return m.record(func() { m.rng = q })
 }
 
-func (m *recordingMetrics) Series(_ context.Context, ms []string, _ storage.TimeRange) (json.RawMessage, error) {
+func (m *recordingMetricStore) Series(_ context.Context, ms []string, _ storage.TimeRange) (json.RawMessage, error) {
 	return m.record(func() { m.matchers = ms })
 }
 
-func (m *recordingMetrics) LabelNames(_ context.Context, ms []string, _ storage.TimeRange) (json.RawMessage, error) {
+func (m *recordingMetricStore) LabelNames(_ context.Context, ms []string, _ storage.TimeRange) (json.RawMessage, error) {
 	return m.record(func() { m.matchers = ms })
 }
 
-func (m *recordingMetrics) LabelValues(_ context.Context, name string, ms []string, _ storage.TimeRange) (json.RawMessage, error) {
+func (m *recordingMetricStore) LabelValues(_ context.Context, name string, ms []string, _ storage.TimeRange) (json.RawMessage, error) {
 	return m.record(func() { m.name, m.matchers = name, ms })
 }
 
-func (m *recordingMetrics) Ping(context.Context) error { return nil }
+func (m *recordingMetricStore) Ping(context.Context) error { return nil }
 
 type promReply struct {
 	Status    string          `json:"status"`
@@ -117,11 +117,11 @@ func newPromServer(t *testing.T, m storage.MetricStore) string {
 	t.Helper()
 	cfg := queryapi.DefaultConfig()
 	cfg.QueryTimeout = 30 * time.Second
-	return serveWithMetrics(t, fake.New(2), m, cfg, allowAll()).URL
+	return serveWithMetricStore(t, fake.NewLogStore(2), m, cfg, allowAll()).URL
 }
 
 func TestPromQueryParameters(t *testing.T) {
-	m := &recordingMetrics{}
+	m := &recordingMetricStore{}
 	base := newPromServer(t, m)
 
 	code, r := promDo(t, base, http.MethodPost, "/metrics/api/v1/query",
@@ -141,7 +141,7 @@ func TestPromQueryParameters(t *testing.T) {
 }
 
 func TestPromBadRequests(t *testing.T) {
-	m := &recordingMetrics{}
+	m := &recordingMetricStore{}
 	base := newPromServer(t, m)
 	rangeForm := func(start, end, step string) url.Values {
 		return url.Values{"query": {"up"}, "start": {start}, "end": {end}, "step": {step}}
@@ -180,7 +180,7 @@ func TestPromBadRequests(t *testing.T) {
 // apiserver's filters may refuse it before the handler does, so any 4xx
 // passes; reaching the store does not.
 func TestPromLabelNameWithSlashNeverReachesTheStore(t *testing.T) {
-	m := &recordingMetrics{}
+	m := &recordingMetricStore{}
 	base := newPromServer(t, m)
 	req, err := http.NewRequest(http.MethodGet, base+prefix+"/metrics/api/v1/label/a%2Fb/values", nil)
 	if err != nil {
@@ -200,7 +200,7 @@ func TestPromLabelNameWithSlashNeverReachesTheStore(t *testing.T) {
 }
 
 func TestPromRangeAtTheLimitsIsAccepted(t *testing.T) {
-	m := &recordingMetrics{}
+	m := &recordingMetricStore{}
 	base := newPromServer(t, m)
 	// 0..10999 at 1s is exactly 11,000 points.
 	code, r := promDo(t, base, http.MethodPost, "/metrics/api/v1/query_range",
@@ -214,7 +214,7 @@ func TestPromRangeAtTheLimitsIsAccepted(t *testing.T) {
 }
 
 func TestPromSelectorsAndLabelNames(t *testing.T) {
-	m := &recordingMetrics{}
+	m := &recordingMetricStore{}
 	base := newPromServer(t, m)
 
 	promDo(t, base, http.MethodGet, "/metrics/api/v1/series", url.Values{"match[]": {"up", `{job="a"}`}})
@@ -235,7 +235,7 @@ func TestPromDataPassesThroughUnchanged(t *testing.T) {
 		`{"resultType":"string","result":[1760400000,"hello"]}`,
 		`{"resultType":"matrix","result":[]}`,
 	} {
-		m := &recordingMetrics{data: json.RawMessage(data)}
+		m := &recordingMetricStore{data: json.RawMessage(data)}
 		base := newPromServer(t, m)
 		_, r := promDo(t, base, http.MethodPost, "/metrics/api/v1/query", url.Values{"query": {"1+1"}})
 		if string(r.Data) != data {
@@ -258,7 +258,7 @@ func TestPromStorageErrors(t *testing.T) {
 		{errors.New("boom"), http.StatusInternalServerError, "internal"},
 	}
 	for _, tc := range cases {
-		base := newPromServer(t, &recordingMetrics{err: tc.err})
+		base := newPromServer(t, &recordingMetricStore{err: tc.err})
 		code, r := promDo(t, base, http.MethodPost, "/metrics/api/v1/query", url.Values{"query": {"up"}})
 		if code != tc.code || r.ErrorType != tc.errorType {
 			t.Errorf("%v: got %d %q, want %d %q", tc.err, code, r.ErrorType, tc.code, tc.errorType)
@@ -268,7 +268,7 @@ func TestPromStorageErrors(t *testing.T) {
 		}
 	}
 	// The backend's own message for a bad query is returned.
-	base := newPromServer(t, &recordingMetrics{err: &storage.QueryError{Message: "unknown function foo"}})
+	base := newPromServer(t, &recordingMetricStore{err: &storage.QueryError{Message: "unknown function foo"}})
 	if _, r := promDo(t, base, http.MethodPost, "/metrics/api/v1/query", url.Values{"query": {"foo()"}}); r.Error != "unknown function foo" {
 		t.Errorf("error = %q", r.Error)
 	}

@@ -16,7 +16,7 @@ import (
 )
 
 func TestMetricsRequireAProject(t *testing.T) {
-	m := fake.NewMetrics()
+	m := fake.NewMetricStore()
 	ctx := context.Background()
 	tr := storage.TimeRange{Start: time.Unix(0, 0), End: time.Unix(60, 0)}
 	calls := map[string]func() error{
@@ -37,7 +37,7 @@ func TestMetricsRequireAProject(t *testing.T) {
 }
 
 func TestMetricsAreScopedToTheCallersProject(t *testing.T) {
-	m := fake.NewMetrics()
+	m := fake.NewMetricStore()
 	ctx := miloauth.WithProject(context.Background(), "proj-a")
 
 	raw, err := m.Query(ctx, storage.InstantQuery{Query: "up", Time: time.Unix(1760400000, 0)})
@@ -75,7 +75,7 @@ func TestMetricsAreScopedToTheCallersProject(t *testing.T) {
 }
 
 func TestMetricsRangeHasOnePointPerStep(t *testing.T) {
-	m := fake.NewMetrics()
+	m := fake.NewMetricStore()
 	ctx := miloauth.WithProject(context.Background(), "proj-a")
 	raw, err := m.QueryRange(ctx, storage.RangeQuery{
 		Query: "up",

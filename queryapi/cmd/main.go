@@ -47,17 +47,17 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	store, err := newLogStore(opts.Query)
+	logStore, err := newLogStore(opts.Query)
 	if err != nil {
 		return fmt.Errorf("configure storage: %w", err)
 	}
 
-	metrics, err := newMetricStore(opts.Query)
+	metricStore, err := newMetricStore(opts.Query)
 	if err != nil {
 		return fmt.Errorf("configure metrics storage: %w", err)
 	}
 
-	cfg, err := opts.Config(logger, store, metrics)
+	cfg, err := opts.Config(logger, logStore, metricStore)
 	if err != nil {
 		return err
 	}
@@ -81,7 +81,7 @@ func run(logger *slog.Logger, args []string) error {
 func newLogStore(cfg queryapi.Config) (storage.LogStore, error) {
 	switch cfg.LogsStorage {
 	case "fake":
-		return fake.New(cfg.FakeRate), nil
+		return fake.NewLogStore(cfg.FakeRate), nil
 	case "clickhouse":
 		chCfg, err := clickhouse.ConfigFromEnv()
 		if err != nil {
@@ -97,7 +97,7 @@ func newLogStore(cfg queryapi.Config) (storage.LogStore, error) {
 func newMetricStore(cfg queryapi.Config) (storage.MetricStore, error) {
 	switch cfg.MetricsStorage {
 	case "fake":
-		return fake.NewMetrics(), nil
+		return fake.NewMetricStore(), nil
 	case "prometheus":
 		tenancy, err := prometheus.ParseTenancy(cfg.PrometheusTenancy)
 		if err != nil {
