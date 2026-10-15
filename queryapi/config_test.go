@@ -3,6 +3,7 @@
 package queryapi
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestDefaultOptionsServeNothingFromEtcd(t *testing.T) {
 		"secure-port", "tls-cert-file", "tls-private-key-file",
 		"authentication-kubeconfig", "requestheader-client-ca-file",
 		"authorization-kubeconfig", "authorization-always-allow-paths",
-		"storage", "query-timeout",
+		"logs-storage", "storage", "query-timeout",
 	} {
 		if fs.Lookup(name) == nil {
 			t.Errorf("--%s is not registered", name)
@@ -93,5 +94,44 @@ func TestOptionsRejectAlwaysAllowingTheAPI(t *testing.T) {
 		o.Recommended.Authorization.AlwaysAllowPaths, "/apis/o11y.miloapis.com/*")
 	if err := o.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want a refusal")
+	}
+}
+
+func TestLogsStorageFlags(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		want    string
+		wantErr bool
+	}{
+		{"default", nil, "fake", false},
+		{"logs-storage alone", []string{"--logs-storage=clickhouse"}, "clickhouse", false},
+		{"deprecated storage alone", []string{"--storage=clickhouse"}, "clickhouse", false},
+		{"both agree", []string{"--storage=clickhouse", "--logs-storage=clickhouse"}, "clickhouse", false},
+		{"both conflict", []string{"--storage=fake", "--logs-storage=clickhouse"}, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewOptions()
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			fs.SetOutput(io.Discard) // the deprecation warning
+			o.AddFlags(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			err := o.Complete()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("Complete() = nil, want a conflict error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Complete() = %v", err)
+			}
+			if o.Query.LogsStorage != tc.want {
+				t.Errorf("LogsStorage = %q, want %q", o.Query.LogsStorage, tc.want)
+			}
+		})
 	}
 }

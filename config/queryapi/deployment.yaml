@@ -35,7 +35,7 @@ spec:
           # the rest of this list alone. Same reason activity's deployment is
           # written this way; see queryapi/README.md for a worked patch.
           args:
-            - --storage=$(STORAGE)
+            - --logs-storage=$(STORAGE)
             - --secure-port=$(SECURE_PORT)
             - --tls-cert-file=$(TLS_CERT_FILE)
             - --tls-private-key-file=$(TLS_PRIVATE_KEY_FILE)

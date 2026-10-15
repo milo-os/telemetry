@@ -12,8 +12,8 @@ import (
 // authentication and authorization lives in Options below, because it belongs
 // to the apiserver runtime rather than to a handler.
 type Config struct {
-	// Storage selects the backend: "fake" or "clickhouse".
-	Storage string
+	// LogsStorage selects the log backend: "fake" or "clickhouse".
+	LogsStorage string
 
 	// FakeRate is the fake backend's lines per second.
 	FakeRate float64
@@ -30,7 +30,7 @@ type Config struct {
 // DefaultConfig returns a Config with production-reasonable defaults.
 func DefaultConfig() Config {
 	return Config{
-		Storage:      "fake",
+		LogsStorage:  "fake",
 		FakeRate:     2,
 		QueryTimeout: 30 * time.Second,
 		DefaultLimit: 100,

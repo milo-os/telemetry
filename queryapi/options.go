@@ -37,6 +37,11 @@ type Options struct {
 
 	// Query is what the handlers need.
 	Query Config
+
+	// legacyStorage is the deprecated --storage, folded into
+	// Query.LogsStorage by Complete.
+	legacyStorage string
+	flags         *pflag.FlagSet
 }
 
 // NewOptions returns Options with production-reasonable defaults.
@@ -90,7 +95,10 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	// names and meanings activity's deployment uses.
 	o.Recommended.AddFlags(fs)
 
-	fs.StringVar(&o.Query.Storage, "storage", o.Query.Storage, "storage backend: fake or clickhouse")
+	fs.StringVar(&o.Query.LogsStorage, "logs-storage", o.Query.LogsStorage, "log storage backend: fake or clickhouse")
+	fs.StringVar(&o.legacyStorage, "storage", "", "deprecated alias for --logs-storage")
+	_ = fs.MarkDeprecated("storage", "use --logs-storage; --storage is removed in the next release")
+	o.flags = fs
 	fs.Float64Var(&o.Query.FakeRate, "fake-rate", o.Query.FakeRate,
 		"synthetic log lines per second (fake backend)")
 	fs.DurationVar(&o.Query.QueryTimeout, "query-timeout", o.Query.QueryTimeout,
@@ -101,6 +109,20 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	// There is deliberately no flag that lets a caller name its own project.
 	// The project comes from the verified identity's iam.miloapis.com/parent-name
 	// extra, and from nowhere else.
+}
+
+// Complete folds deprecated flags into their replacements. Call it after
+// parsing and before Validate.
+func (o *Options) Complete() error {
+	if o.legacyStorage == "" {
+		return nil
+	}
+	if o.flags != nil && o.flags.Changed("logs-storage") && o.Query.LogsStorage != o.legacyStorage {
+		return fmt.Errorf("--storage=%q conflicts with --logs-storage=%q; set only --logs-storage",
+			o.legacyStorage, o.Query.LogsStorage)
+	}
+	o.Query.LogsStorage = o.legacyStorage
+	return nil
 }
 
 // Validate reports whether the options are usable.

@@ -39,11 +39,14 @@ func run(logger *slog.Logger, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse flags: %w", err)
 	}
+	if err := opts.Complete(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
 	if err := opts.Validate(); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	store, err := newStore(opts.Query)
+	store, err := newLogStore(opts.Query)
 	if err != nil {
 		return fmt.Errorf("configure storage: %w", err)
 	}
@@ -68,9 +71,9 @@ func run(logger *slog.Logger, args []string) error {
 	return server.Run(ctx)
 }
 
-// newStore builds the configured storage backend.
-func newStore(cfg queryapi.Config) (storage.LogStore, error) {
-	switch cfg.Storage {
+// newLogStore builds the configured log storage backend.
+func newLogStore(cfg queryapi.Config) (storage.LogStore, error) {
+	switch cfg.LogsStorage {
 	case "fake":
 		return fake.New(cfg.FakeRate), nil
 	case "clickhouse":
@@ -80,6 +83,6 @@ func newStore(cfg queryapi.Config) (storage.LogStore, error) {
 		}
 		return clickhouse.New(chCfg)
 	default:
-		return nil, fmt.Errorf("unknown storage backend %q", cfg.Storage)
+		return nil, fmt.Errorf("unknown storage backend %q", cfg.LogsStorage)
 	}
 }

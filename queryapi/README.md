@@ -39,7 +39,7 @@ permissions, not collections.
 
 ## Storage backends
 
-| `--storage` | Behaviour |
+| `--logs-storage` | Behaviour |
 | --- | --- |
 | `fake` (default) | Deterministic synthetic logs, a pure function of the query's time range. Same range always returns the same rows. |
 | `clickhouse` | Serves log queries and label/stream discovery against the `o11y.logs` schema via LogQL-to-SQL translation. `/readyz` pings the backend. |
@@ -71,7 +71,8 @@ them without restating the rest. See [Deployment](#deployment).
 | `--authorization-always-allow-paths` | `/healthz,/readyz,/livez,/metrics` |
 | `--authorization-webhook-cache-authorized-ttl` | `10s` |
 | `--authorization-webhook-cache-unauthorized-ttl` | `10s` |
-| `--storage` | `fake` |
+| `--logs-storage` | `fake` |
+| `--storage` | deprecated alias for `--logs-storage`; removed in the next release |
 | `--fake-rate` | `2` (lines/sec) |
 | `--query-timeout` | `30s` |
 | `--default-limit` | `100` |
@@ -99,7 +100,7 @@ serving stack owns the `http.Server` and sets them (32s and 90s).
 
 ## ClickHouse environment
 
-Used only with `--storage=clickhouse`. Authentication is by client
+Used only with `--logs-storage=clickhouse`. Authentication is by client
 certificate, not password, matching `clickhouse-migrate`.
 
 | Env var | Default |
