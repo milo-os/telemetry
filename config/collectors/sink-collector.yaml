@@ -1,6 +1,7 @@
 # Hub-side NATS -> ClickHouse sink. Reads the hub JetStream stream via the
 # pre-existing `o11y-sink-collector` durable consumer (filter `o11y.logs.>`)
-# and writes to the `o11y.logs` MergeTree table. The stream/consumer/ClickHouse
+# and writes to the `o11y.logs` MergeTree table. A separate traces consumer
+# sends spans to Tempo. The stream/consumers/ClickHouse
 # live in the consuming platform, not here -- this is the collector workload
 # only. ${...} placeholders are overlaid at publish/consume time (see
 # .github/workflows/publish.yaml and the kustomization).
@@ -79,13 +80,24 @@ spec:
           subject: o11y.logs.>
           encoding: otlp_proto
         # natsreceiver Validate() requires a subject on every signal type even
-        # when unused, so give metrics/traces harmless unused subjects. Neither
-        # pipeline is wired up; this stays the logs-only sink.
+        # when unused, so give metrics/traces harmless unused subjects on the
+        # logs receiver. The separate nats/traces receiver has its own consumer.
         metrics:
           subject: o11y.unused.metrics
           encoding: otlp_proto
         traces:
           subject: o11y.unused.traces
+          encoding: otlp_proto
+      nats/traces:
+        url: ${nats_url}
+        stream: o11y
+        consumer_name: o11y-traces-collector
+        tls:
+          ca_file: /etc/otel/nats-client/ca.crt
+          cert_file: /etc/otel/nats-client/tls.crt
+          key_file: /etc/otel/nats-client/tls.key
+        traces:
+          subject: o11y.traces.>
           encoding: otlp_proto
 
     processors:
@@ -117,8 +129,7 @@ spec:
     exporters:
       # Contrib clickhouseexporter registers under the id `clickhouse`, so the
       # exporter must be named `clickhouse` (not clickhouse_logs) to resolve.
-      # Sibling metrics/traces pipelines can be added later with their own
-      # receiver+exporter; this bundle is the logs sink only.
+      # Traces use a separate receiver and Tempo exporter below.
       clickhouse:
         # Secure TCP endpoint of a ClickHouse replica, e.g.
         # tcp://chi-clickhouse-o11y-0-0.o11y-system.svc.cluster.local:9440.
@@ -143,6 +154,10 @@ spec:
           initial_interval: 5s
           max_interval: 30s
           max_elapsed_time: 300s
+      otlp/tempo:
+        endpoint: ${tempo_endpoint}
+        tls:
+          insecure: true
 
     service:
       pipelines:
@@ -150,3 +165,7 @@ spec:
           receivers: [nats]
           processors: [memory_limiter, transform/observed_time, batch]
           exporters: [clickhouse]
+        traces:
+          receivers: [nats/traces]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo]

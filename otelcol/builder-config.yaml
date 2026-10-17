@@ -34,6 +34,7 @@ exporters:
   - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.157.0
   - gomod: go.datum.net/o11y/exporter/natsexporter v0.1.0
   - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.157.0
+  - gomod: go.opentelemetry.io/collector/exporter/otlpexporter v0.157.0
 
 replaces:
   # Paths are relative to output_path (./_build), where OCB writes go.mod.
