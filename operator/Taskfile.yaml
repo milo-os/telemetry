@@ -6,7 +6,7 @@ env:
   # CI resolves Go from go.mod via setup-go, so pin the same version here for
   # standalone runs of this Taskfile (the root Taskfile also sets this, but
   # that doesn't propagate to `task` invoked directly from this directory).
-  GOTOOLCHAIN: go1.25.0
+  GOTOOLCHAIN: go1.26.0
 
 vars:
   TOOL_DIR: "{{.USER_WORKING_DIR}}/bin"
