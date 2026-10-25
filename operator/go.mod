@@ -9,7 +9,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	github.com/stretchr/testify v1.11.1
-	go.miloapis.com/milo v0.36.10
+	go.miloapis.com/milo v0.36.9
 	golang.org/x/sync v0.23.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
