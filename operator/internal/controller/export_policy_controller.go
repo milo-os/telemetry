@@ -24,6 +24,7 @@ import (
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	"go.datum.net/o11y/operator/api/v1alpha1"
@@ -192,7 +193,7 @@ func (r *ExportPolicyReconciler) Reconcile(ctx context.Context, req mcreconcile.
 
 	// Create the vector configuration for the export policy. This will skip over
 	// any source or sink configurations that are not valid.
-	vectorConfig := r.createVectorConfiguration(ctx, strings.ReplaceAll(req.ClusterName, "/", ""), upstreamClient, exportPolicy)
+	vectorConfig := r.createVectorConfiguration(ctx, strings.ReplaceAll(req.ClusterName.String(), "/", ""), upstreamClient, exportPolicy)
 	vectorConfigJSON, err := json.MarshalIndent(vectorConfig, "", "  ")
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to marshal vector config: %w", err)
@@ -368,7 +369,7 @@ func (r *ExportPolicyReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&v1alpha1.ExportPolicy{}, mcbuilder.WithEngageWithLocalCluster(false), mcbuilder.WithEngageWithProviderClusters(true)).
-		Watches(&corev1.Secret{}, func(clusterName string, cluster cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
+		Watches(&corev1.Secret{}, func(clusterName multicluster.ClusterName, cluster cluster.Cluster) handler.TypedEventHandler[client.Object, mcreconcile.Request] {
 			return mchandler.TypedEnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []mcreconcile.Request {
 				logger := log.FromContext(ctx)
 				secret, ok := obj.(*corev1.Secret)

@@ -23,8 +23,8 @@ var exportpolicylog = logf.Log.WithName("exportpolicy-resource")
 
 // SetupExportPolicyWebhookWithManager registers the webhook for ExportPolicy in the manager.
 func SetupExportPolicyWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&telemetryv1alpha1.ExportPolicy{}).
-		WithValidator(&ExportPolicyCustomValidator{}).
+	return ctrl.NewWebhookManagedBy(mgr, &telemetryv1alpha1.ExportPolicy{}).
+		WithCustomValidator(&ExportPolicyCustomValidator{}).
 		Complete()
 }
 
