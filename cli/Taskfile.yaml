@@ -1,10 +1,10 @@
 version: '3'
 
-# The datumctl plugin SDK needs Go 1.25.8, newer than the repo-wide go1.25.0
+# The datumctl plugin SDK needs Go 1.26.0, matching the repo-wide go1.26.0
 # pin. CI reads this module's go.mod. A Taskfile-level env loses to the root
 # Taskfile's, so each task sets it.
 vars:
-  GOTOOLCHAIN: go1.25.8
+  GOTOOLCHAIN: go1.26.0
 
 tasks:
   tidy:
