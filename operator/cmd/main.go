@@ -273,7 +273,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	mgr, err := mcmanager.New(upstreamClusterConfig, provider, ctrl.Options{
+	mgr, err := mcmanager.New(upstreamClusterConfig, managedProvider{provider}, ctrl.Options{
 		Scheme:                        scheme,
 		Metrics:                       metricsServerOptions,
 		WebhookServer:                 webhookServer,
@@ -330,7 +330,7 @@ func main() {
 		workers = append(workers, runnable.Start)
 	}
 	workers = append(workers, func(ctx context.Context) error {
-		return provider.Run(ctx, mgr)
+		return provider.Start(ctx, mgr)
 	})
 
 	setupLog.Info("starting cluster discovery provider and multicluster manager")
@@ -365,22 +365,11 @@ func runUntilManagerStops(
 
 type runnableProvider interface {
 	multicluster.Provider
-	Run(context.Context, mcmanager.Manager) error
+	multicluster.ProviderRunnable
 }
 
-// Needed until we contribute the patch in the following PR again (need to sign CLA):
-//
-//	See: https://github.com/kubernetes-sigs/multicluster-runtime/pull/18
-type wrappedSingleClusterProvider struct {
+type managedProvider struct {
 	multicluster.Provider
-	cluster cluster.Cluster
-}
-
-func (p *wrappedSingleClusterProvider) Run(ctx context.Context, mgr mcmanager.Manager) error {
-	if err := mgr.Engage(ctx, "single", p.cluster); err != nil {
-		return err
-	}
-	return p.Provider.(runnableProvider).Run(ctx, mgr)
 }
 
 func initializeClusterDiscovery(
@@ -391,10 +380,7 @@ func initializeClusterDiscovery(
 	runnables = append(runnables, deploymentCluster)
 	switch serverConfig.Discovery.Mode {
 	case milomulticluster.ProviderSingle:
-		provider = &wrappedSingleClusterProvider{
-			Provider: mcsingle.New("single", deploymentCluster),
-			cluster:  deploymentCluster,
-		}
+		provider = mcsingle.New("single", deploymentCluster)
 
 	case milomulticluster.ProviderMilo:
 		discoveryRestConfig, err := serverConfig.Discovery.DiscoveryRestConfig()

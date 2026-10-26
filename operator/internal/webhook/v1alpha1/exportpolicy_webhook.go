@@ -4,13 +4,10 @@ package v1alpha1
 
 import (
 	"context"
-	"fmt"
 
 	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	telemetryv1alpha1 "go.datum.net/o11y/operator/api/v1alpha1"
@@ -23,7 +20,7 @@ var exportpolicylog = logf.Log.WithName("exportpolicy-resource")
 
 // SetupExportPolicyWebhookWithManager registers the webhook for ExportPolicy in the manager.
 func SetupExportPolicyWebhookWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewWebhookManagedBy(mgr).For(&telemetryv1alpha1.ExportPolicy{}).
+	return ctrl.NewWebhookManagedBy(mgr, &telemetryv1alpha1.ExportPolicy{}).
 		WithValidator(&ExportPolicyCustomValidator{}).
 		Complete()
 }
@@ -40,44 +37,32 @@ func SetupExportPolicyWebhookWithManager(mgr ctrl.Manager) error {
 type ExportPolicyCustomValidator struct {
 }
 
-var _ webhook.CustomValidator = &ExportPolicyCustomValidator{}
+var _ admission.Validator[*telemetryv1alpha1.ExportPolicy] = &ExportPolicyCustomValidator{}
 
 // ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type ExportPolicy.
-func (v *ExportPolicyCustomValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	exportpolicy, ok := obj.(*telemetryv1alpha1.ExportPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a ExportPolicy object but got %T", obj)
-	}
+func (v *ExportPolicyCustomValidator) ValidateCreate(ctx context.Context, exportpolicy *telemetryv1alpha1.ExportPolicy) (admission.Warnings, error) {
 	exportpolicylog.Info("Validation for ExportPolicy upon creation", "name", exportpolicy.GetName())
 
 	if errs := validation.ValidateExportPolicy(exportpolicy); len(errs) > 0 {
-		return nil, errors.NewInvalid(obj.GetObjectKind().GroupVersionKind().GroupKind(), exportpolicy.Name, errs)
+		return nil, errors.NewInvalid(exportpolicy.GetObjectKind().GroupVersionKind().GroupKind(), exportpolicy.Name, errs)
 	}
 
 	return nil, nil
 }
 
 // ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type ExportPolicy.
-func (v *ExportPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	exportpolicy, ok := newObj.(*telemetryv1alpha1.ExportPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a ExportPolicy object for the newObj but got %T", newObj)
-	}
+func (v *ExportPolicyCustomValidator) ValidateUpdate(ctx context.Context, oldObj, exportpolicy *telemetryv1alpha1.ExportPolicy) (admission.Warnings, error) {
 	exportpolicylog.Info("Validation for ExportPolicy upon update", "name", exportpolicy.GetName())
 
 	if errs := validation.ValidateExportPolicy(exportpolicy); len(errs) > 0 {
-		return nil, errors.NewInvalid(newObj.GetObjectKind().GroupVersionKind().GroupKind(), exportpolicy.Name, errs)
+		return nil, errors.NewInvalid(exportpolicy.GetObjectKind().GroupVersionKind().GroupKind(), exportpolicy.Name, errs)
 	}
 
 	return nil, nil
 }
 
 // ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type ExportPolicy.
-func (v *ExportPolicyCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	exportpolicy, ok := obj.(*telemetryv1alpha1.ExportPolicy)
-	if !ok {
-		return nil, fmt.Errorf("expected a ExportPolicy object but got %T", obj)
-	}
+func (v *ExportPolicyCustomValidator) ValidateDelete(ctx context.Context, exportpolicy *telemetryv1alpha1.ExportPolicy) (admission.Warnings, error) {
 	exportpolicylog.Info("Validation for ExportPolicy upon deletion", "name", exportpolicy.GetName())
 
 	return nil, nil
