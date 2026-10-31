@@ -46,7 +46,7 @@ spec:
     spec:
       containers:
         - name: metrics
-          image: natsio/prometheus-nats-exporter:0.20.2
+          image: natsio/prometheus-nats-exporter:0.20.3
           args:
             - -varz
             - -connz
@@ -71,7 +71,7 @@ spec:
               cpu: 50m
               memory: 64Mi
         - name: nats
-          image: nats:2.14.6-alpine
+          image: nats:2.14.9-alpine
           # server_name lives here, not in the mounted config, so it takes
           # effect on deploy. It must be unique per site -- the hub keys leaf
           # connections on it and evicts the incumbent on a match, so a shared
