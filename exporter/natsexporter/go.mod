@@ -2,6 +2,8 @@ module go.datum.net/o11y/exporter/natsexporter
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0

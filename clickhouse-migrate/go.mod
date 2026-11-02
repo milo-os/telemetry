@@ -2,6 +2,8 @@ module go.datum.net/o11y/clickhouse-migrate
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.42.0
 	github.com/golang-migrate/migrate/v4 v4.19.1

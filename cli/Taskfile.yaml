@@ -4,7 +4,7 @@ version: '3'
 # pin. CI reads this module's go.mod. A Taskfile-level env loses to the root
 # Taskfile's, so each task sets it.
 vars:
-  GOTOOLCHAIN: go1.26.0
+  GOTOOLCHAIN: go1.27.3
 
 tasks:
   tidy:
