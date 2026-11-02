@@ -2,6 +2,8 @@ module go.datum.net/o11y/queryapi
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.42.0
 	github.com/getkin/kin-openapi v0.149.0
