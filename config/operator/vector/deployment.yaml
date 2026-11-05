@@ -18,7 +18,7 @@ spec:
       automountServiceAccountToken: true
       containers:
         - name: vector
-          image: timberio/vector:0.45.0-distroless-static
+          image: timberio/vector:0.61.0-distroless-static
           args:
           - --log-format=json
           - --verbose
