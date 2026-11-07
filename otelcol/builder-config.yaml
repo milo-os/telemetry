@@ -12,28 +12,28 @@ dist:
   output_path: ./_build
 
 extensions:
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer/k8sobserver v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/healthcheckextension v0.164.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/observer/k8sobserver v0.164.1
 
 receivers:
-  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/receivercreator v0.157.0
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.164.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/filelogreceiver v0.164.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/receiver/receivercreator v0.164.1
   - gomod: go.datum.net/o11y/receiver/natsreceiver v0.1.0
 
 processors:
-  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.157.0
-  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/groupbyattrsprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.157.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.157.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.164.0
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.164.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/groupbyattrsprocessor v0.164.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/k8sattributesprocessor v1.3.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/resourceprocessor v0.164.1
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.164.1
   - gomod: go.datum.net/o11y/processor/unbatchprocessor v0.1.0
 
 exporters:
-  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.157.0
+  - gomod: go.opentelemetry.io/collector/exporter/debugexporter v0.164.0
   - gomod: go.datum.net/o11y/exporter/natsexporter v0.1.0
-  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.157.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/exporter/clickhouseexporter v0.164.1
 
 replaces:
   # Paths are relative to output_path (./_build), where OCB writes go.mod.

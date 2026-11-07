@@ -6,7 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/spf13/cobra v1.10.2
-	go.datum.net/datumctl v0.20.1
+	go.datum.net/datumctl v0.23.3
 )
 
 require (

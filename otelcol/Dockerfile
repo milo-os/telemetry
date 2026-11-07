@@ -19,7 +19,7 @@ WORKDIR /workspace/otelcol
 # binary it produces should be cross-compiled; setting GOARCH around a
 # `go run` invocation makes go try to execute the freshly built tool
 # itself as a foreign-arch binary, which fails without QEMU registered.
-RUN go install go.opentelemetry.io/collector/cmd/builder@v0.157.0
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.164.0
 RUN GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} \
     "$(go env GOPATH)/bin/builder" --config builder-config.yaml
 
