@@ -5,7 +5,7 @@ metadata:
 spec:
   mode: daemonset
   serviceAccount: compute-node-collector
-  image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.144.0
+  image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0
   nodeSelector:
     kubernetes.io/os: linux
     node-role.datumapis.com/compute: ""
