@@ -1,6 +1,8 @@
 module go.datum.net/o11y/processor/unbatchprocessor
 
-go 1.25.0
+go 1.26.0
+
+toolchain go1.27.3
 
 require (
 	github.com/stretchr/testify v1.11.1

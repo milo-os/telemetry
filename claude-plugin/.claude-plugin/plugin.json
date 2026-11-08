@@ -1,0 +1,22 @@
+{
+  "name": "milo-observe",
+  "description": "Query your project's logs, export metrics to Grafana Cloud, and read the status metrics Datum publishes for your resources",
+  "version": "0.1.0",
+  "author": {
+    "name": "Datum Cloud",
+    "url": "https://github.com/datum-cloud"
+  },
+  "homepage": "https://www.datum.net/docs/operations/metrics-export",
+  "repository": "https://github.com/milo-os/telemetry",
+  "license": "AGPL-3.0",
+  "keywords": [
+    "observability",
+    "logs",
+    "metrics",
+    "logql",
+    "metricsql",
+    "grafana",
+    "prometheus",
+    "datum"
+  ]
+}

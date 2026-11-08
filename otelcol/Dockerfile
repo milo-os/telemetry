@@ -3,7 +3,7 @@
 # processor/unbatchprocessor, exporter/natsexporter, and
 # receiver/natsreceiver modules that builder-config.yaml's replace
 # directives point at.
-FROM --platform=$BUILDPLATFORM docker.io/golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM docker.io/golang:1.27 AS builder
 ARG TARGETOS
 ARG TARGETARCH
 

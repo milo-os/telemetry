@@ -132,14 +132,18 @@ func withAuthorizer(delegate authorizer.Authorizer) deps {
 	if err != nil {
 		panic(err)
 	}
-	chain := []authorizer.Authorizer{
-		authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup),
-		alwaysAllowPaths,
+	chain := []authzunion.NamedAuthorizer{
+		{AuthorizerName: "privileged-groups", Authorizer: authorizerfactory.NewPrivilegedGroups(user.SystemPrivilegedGroup)},
+		{AuthorizerName: "always-allow-paths", Authorizer: alwaysAllowPaths},
 	}
 	if delegate != nil {
-		chain = append(chain, delegate)
+		chain = append(chain, authzunion.NamedAuthorizer{AuthorizerName: "delegate", Authorizer: delegate})
 	}
-	return deps{authn: testAuthenticator(), authz: authzunion.New(chain...)}
+	authz, err := authzunion.New(chain...)
+	if err != nil {
+		panic(err)
+	}
+	return deps{authn: testAuthenticator(), authz: authz}
 }
 
 // serve builds the real server -- the generic apiserver, its handler chain,
@@ -218,4 +222,19 @@ func waitForReady(t *testing.T, server *queryapi.Server) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("post-start hooks never reported healthy: %s", rec.Body.String())
+}
+
+func (s *stubAuthorizer) ConditionsAwareAuthorize(
+	ctx context.Context,
+	attrs authorizer.Attributes,
+) authorizer.ConditionsAwareDecision {
+	return authorizer.ConditionsAwareDecisionFromParts(s.Authorize(ctx, attrs))
+}
+
+func (s *stubAuthorizer) EvaluateConditions(
+	context.Context,
+	authorizer.ConditionsAwareDecision,
+	authorizer.ConditionsData,
+) (authorizer.Decision, string, error) {
+	return authorizer.DecisionDeny, "", authorizer.ErrorConditionEvaluationNotSupported
 }

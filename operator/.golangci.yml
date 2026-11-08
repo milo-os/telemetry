@@ -29,6 +29,9 @@ linters:
     generated: lax
     rules:
       - linters:
+          - staticcheck
+        text: 'SA1019: \(sigs\.k8s\.io/controller-runtime\.Result\)\.Requeue is deprecated'
+      - linters:
           - lll
         path: api/*
       - linters:

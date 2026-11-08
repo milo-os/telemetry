@@ -2,6 +2,7 @@ package config
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -82,5 +83,9 @@ func (c *DiscoveryConfig) ProjectRestConfig() (*rest.Config, error) {
 }
 
 func init() {
-	SchemeBuilder.Register(&TelemetryServicesOperator{})
+	SchemeBuilder.Register(func(s *runtime.Scheme) error {
+		s.AddKnownTypes(GroupVersion, &TelemetryServicesOperator{})
+		metav1.AddToGroupVersion(s, GroupVersion)
+		return nil
+	})
 }

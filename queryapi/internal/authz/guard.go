@@ -98,6 +98,14 @@ func (g *guard) Authorize(ctx context.Context, attrs authorizer.Attributes) (aut
 	return decision, reason, err
 }
 
+func (g *guard) ConditionsAwareAuthorize(ctx context.Context, attrs authorizer.Attributes) authorizer.ConditionsAwareDecision {
+	return authorizer.ConditionsAwareDecisionFromParts(g.Authorize(ctx, attrs))
+}
+
+func (g *guard) EvaluateConditions(context.Context, authorizer.ConditionsAwareDecision, authorizer.ConditionsData) (authorizer.Decision, string, error) {
+	return authorizer.DecisionDeny, "", authorizer.ErrorConditionEvaluationNotSupported
+}
+
 // ours reports whether attrs describes a request to this service's own API
 // group, by either of the two shapes the resolver can produce.
 func ours(attrs authorizer.Attributes) bool {
