@@ -9,6 +9,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/stretchr/testify v1.11.1
 	go.opentelemetry.io/collector/component v1.60.0
+	go.opentelemetry.io/collector/component/componentstatus v0.154.0
 	go.opentelemetry.io/collector/component/componenttest v0.154.0
 	go.opentelemetry.io/collector/config/configtls v1.60.0
 	go.opentelemetry.io/collector/consumer v1.60.0
