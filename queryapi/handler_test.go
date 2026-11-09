@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -78,7 +79,15 @@ func TestHandlersConformToSpec(t *testing.T) {
 			`query={service_name="waf"}&start=2026-01-01T00:00:00Z&end=2026-01-01T01:00:00Z`, nil,
 		},
 		{"loki label names", http.MethodGet, "/logs/loki/api/v1/labels", "", nil},
+		{
+			"loki count query", http.MethodGet, "/logs/loki/api/v1/query",
+			"query=" + url.QueryEscape(`sum by (severity) (count_over_time({service_name="waf"}[5m]))`), nil,
+		},
 		{"loki label values", http.MethodGet, "/logs/loki/api/v1/label/severity/values", "", nil},
+		{
+			"loki label values scoped", http.MethodGet, "/logs/loki/api/v1/label/severity/values",
+			"query=" + url.QueryEscape(`{service_name="waf"}`), nil,
+		},
 		{"loki series", http.MethodGet, "/logs/loki/api/v1/series", `match[]={service_name="foo"}`, nil},
 		{"prom query", http.MethodPost, "/metrics/api/v1/query", "", url.Values{"query": {"cpu_usage"}}},
 		{
@@ -292,7 +301,11 @@ func (s *recordingLogStore) LabelNames(ctx context.Context, _ storage.TimeRange)
 	return nil, s.note(ctx)
 }
 
-func (s *recordingLogStore) LabelValues(ctx context.Context, _ string, _ storage.TimeRange) ([]string, error) {
+func (s *recordingLogStore) LabelValues(ctx context.Context, _ string, _ []logql.LabelMatcher, _ storage.TimeRange) ([]string, error) {
+	return nil, s.note(ctx)
+}
+
+func (s *recordingLogStore) CountByLabels(ctx context.Context, _ storage.CountQuery) ([]storage.LabelCount, error) {
 	return nil, s.note(ctx)
 }
 
@@ -487,7 +500,8 @@ func TestGrafanaHealthProbe(t *testing.T) {
 	t.Run("other metric queries are still rejected", func(t *testing.T) {
 		for _, q := range []string{
 			`rate({service_name="waf"}[5m])`,
-			`sum by (service_name) (count_over_time({service_name="waf"}[5m]))`,
+			`sum by (service_name) (rate({service_name="waf"}[5m]))`,
+			`count_over_time({service_name="waf"}[5m])`,
 			`vector(1)`,
 			`vector(1) + vector(1)`, // spacing differs from the probe
 		} {
@@ -709,3 +723,127 @@ func (*unreachableLogStore) Ping(context.Context) error {
 }
 
 var _ storage.LogStore = (*unreachableLogStore)(nil)
+
+// TestCountQuery covers sum by (...) (count_over_time(...)) on /query: one
+// vector sample per group, counting lines in [time-range, time), and the
+// selector and line filters narrowing what is counted.
+func TestCountQuery(t *testing.T) {
+	cfg := queryapi.DefaultConfig()
+	srv := serve(t, fake.NewLogStore(2), cfg, allowAll())
+	at := "2026-01-01T01:00:00Z"
+
+	count := func(t *testing.T, path, query string) (int, map[string]float64, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet,
+			srv.URL+prefix+path+"?time="+at+"&query="+url.QueryEscape(query), nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		forwardIdentity(req)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			return resp.StatusCode, nil, string(body)
+		}
+		var payload struct {
+			Data struct {
+				ResultType string `json:"resultType"`
+				Result     []struct {
+					Metric map[string]string `json:"metric"`
+					Value  [2]any            `json:"value"`
+				} `json:"result"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode: %v: %s", err, body)
+		}
+		if payload.Data.ResultType != "vector" {
+			t.Fatalf("resultType = %q, want vector", payload.Data.ResultType)
+		}
+		out := map[string]float64{}
+		for _, s := range payload.Data.Result {
+			var n float64
+			if _, err := fmt.Sscan(s.Value[1].(string), &n); err != nil {
+				t.Fatalf("value %v: %v", s.Value[1], err)
+			}
+			out[s.Metric["severity"]] += n
+		}
+		return resp.StatusCode, out, string(body)
+	}
+
+	_, all, _ := count(t, "/logs/loki/api/v1/query", `sum(count_over_time({service_name=~".+"}[1h]))`)
+	_, bySeverity, body := count(t, "/logs/loki/api/v1/query", `sum by (severity) (count_over_time({service_name=~".+"}[1h]))`)
+	if len(bySeverity) < 2 {
+		t.Fatalf("want several severities, got %v: %s", bySeverity, body)
+	}
+	var total float64
+	for _, n := range bySeverity {
+		total += n
+	}
+	// 2 lines/s for an hour, all of it matched: the groups add up to the total.
+	if total != all[""] || total != 7200 {
+		t.Errorf("groups sum to %v, ungrouped total %v, want both 7200", total, all[""])
+	}
+
+	_, waf, _ := count(t, "/logs/loki/api/v1/query", `sum by (severity) (count_over_time({service_name="waf"}[1h]))`)
+	var wafTotal float64
+	for _, n := range waf {
+		wafTotal += n
+	}
+	if wafTotal == 0 || wafTotal >= total {
+		t.Errorf("waf-only total %v should be a non-empty part of %v", wafTotal, total)
+	}
+
+	_, short, _ := count(t, "/logs/loki/api/v1/query", `sum(count_over_time({service_name=~".+"}[30m]))`)
+	if short[""] != 3600 {
+		t.Errorf("30m window counted %v, want 3600", short[""])
+	}
+
+	if code, _, body := count(t, "/logs/loki/api/v1/query_range", `sum(count_over_time({service_name="waf"}[5m]))`); code != http.StatusBadRequest {
+		t.Errorf("metric query on query_range: status %d, want 400: %s", code, body)
+	}
+	if code, _, body := count(t, "/logs/loki/api/v1/query", `sum(count_over_time({service_name="waf"}[400d]))`); code != http.StatusBadRequest {
+		t.Errorf("range beyond MaxRange: status %d, want 400: %s", code, body)
+	}
+}
+
+// TestLabelValuesHonourQuery pins the scoping /label/{name}/values documents:
+// a selector narrows the values to the lines it picks.
+func TestLabelValuesHonourQuery(t *testing.T) {
+	srv := serve(t, fake.NewLogStore(2), queryapi.DefaultConfig(), allowAll())
+	values := func(t *testing.T, query string) []string {
+		t.Helper()
+		u := srv.URL + prefix + "/logs/loki/api/v1/label/service_name/values"
+		if query != "" {
+			u += "?query=" + url.QueryEscape(query)
+		}
+		req, err := http.NewRequest(http.MethodGet, u, nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		forwardIdentity(req)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("do request: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		var payload struct {
+			Data []string `json:"data"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return payload.Data
+	}
+
+	if all := values(t, ""); len(all) < 2 {
+		t.Fatalf("unscoped values = %v, want several services", all)
+	}
+	if scoped := values(t, `{service_name="waf"}`); len(scoped) != 1 || scoped[0] != "waf" {
+		t.Errorf("scoped values = %v, want [waf]", scoped)
+	}
+}

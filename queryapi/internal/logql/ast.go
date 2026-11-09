@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Package logql parses the LogQL subset the query layer accepts: label
-// matchers and line filters.
+// matchers and line filters, and sum(count_over_time(...)) (see metric.go).
 package logql
 
 import (

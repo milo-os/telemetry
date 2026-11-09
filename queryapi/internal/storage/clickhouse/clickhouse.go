@@ -107,12 +107,12 @@ func (s *Store) LabelNames(ctx context.Context, tr storage.TimeRange) ([]string,
 	return dedupe(names), nil
 }
 
-func (s *Store) LabelValues(ctx context.Context, label string, tr storage.TimeRange) ([]string, error) {
+func (s *Store) LabelValues(ctx context.Context, label string, matchers []logql.LabelMatcher, tr storage.TimeRange) ([]string, error) {
 	projectID, err := project(ctx)
 	if err != nil {
 		return nil, err
 	}
-	query, args := buildLabelValuesQuery(projectID, label, tr)
+	query, args := buildLabelValuesQuery(projectID, label, matchers, tr)
 	values, err := s.scanStrings(projectContext(ctx, projectID), query, args)
 	if err != nil {
 		return nil, err
@@ -157,6 +157,46 @@ func (s *Store) Series(ctx context.Context, matchers []logql.LabelMatcher, tr st
 
 // scanStrings drains a single-string-column result (label names/values) into a
 // sorted, deduped slice.
+func (s *Store) CountByLabels(ctx context.Context, q storage.CountQuery) (out []storage.LabelCount, err error) {
+	projectID, err := project(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query, args, err := buildCountQuery(projectID, q)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.conn.Query(projectContext(ctx, projectID), query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("clickhouse: count: %w", err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	for rows.Next() {
+		values := make([]string, len(q.By))
+		var count uint64
+		dest := make([]any, 0, len(q.By)+1)
+		for i := range values {
+			dest = append(dest, &values[i])
+		}
+		dest = append(dest, &count)
+		if err := rows.Scan(dest...); err != nil {
+			return nil, fmt.Errorf("clickhouse: count: scan: %w", err)
+		}
+		labels := storage.LabelSet{}
+		for i, name := range q.By {
+			if values[i] != "" {
+				labels[name] = values[i]
+			}
+		}
+		out = append(out, storage.LabelCount{Labels: labels, Count: count})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("clickhouse: count: %w", err)
+	}
+	return out, nil
+}
+
 func (s *Store) scanStrings(ctx context.Context, query string, args []any) (out []string, err error) {
 	rows, err := s.conn.Query(ctx, query, args...)
 	if err != nil {

@@ -110,6 +110,8 @@ func TestStoreAgainstClickHouse(t *testing.T) {
 	runQueryLogs(t, store, ctx, ran)
 	runLabelNames(t, store, ctx, ran)
 	runLabelValues(t, store, ctx, ran)
+	runScopedLabelValues(t, store, ctx, ran)
+	runCountByLabels(t, store, ctx, ran)
 	runResourceOnlyLabelRoundTrip(t, store, ctx, ran)
 	runSeries(t, store, ctx, ran)
 	runSubsecondWindows(t, conn, store, base)
@@ -217,7 +219,7 @@ func runSubsecondWindows(t *testing.T, conn driver.Conn, store *Store, base time
 		}
 
 		// Label values share the same window clause.
-		values, err := store.LabelValues(ctx, "service_name", window(tt.from, tt.to))
+		values, err := store.LabelValues(ctx, "service_name", nil, window(tt.from, tt.to))
 		if err != nil {
 			t.Fatalf("LabelValues %s: %v", tt.name, err)
 		}
@@ -235,7 +237,7 @@ func runSubsecondWindows(t *testing.T, conn driver.Conn, store *Store, base time
 		Start: time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC),
 		End:   time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC),
 	}
-	values, err := store.LabelValues(ctx, "service_name", wide)
+	values, err := store.LabelValues(ctx, "service_name", nil, wide)
 	if err != nil {
 		t.Fatalf("LabelValues over years 1-9999: %v", err)
 	}
@@ -314,7 +316,7 @@ func runLabelNames(t *testing.T, store *Store, ctx context.Context, ran storage.
 func runResourceOnlyLabelRoundTrip(t *testing.T, store *Store, ctx context.Context, ran storage.TimeRange) {
 	t.Helper()
 
-	values, err := store.LabelValues(ctx, "k8s_node_name", ran)
+	values, err := store.LabelValues(ctx, "k8s_node_name", nil, ran)
 	if err != nil {
 		t.Fatalf("LabelValues(k8s_node_name): %v", err)
 	}
@@ -349,7 +351,7 @@ func runResourceOnlyLabelRoundTrip(t *testing.T, store *Store, ctx context.Conte
 
 func runLabelValues(t *testing.T, store *Store, ctx context.Context, ran storage.TimeRange) {
 	t.Helper()
-	svcValues, err := store.LabelValues(ctx, "service_name", ran)
+	svcValues, err := store.LabelValues(ctx, "service_name", nil, ran)
 	if err != nil {
 		t.Fatalf("LabelValues(service_name): %v", err)
 	}
@@ -357,7 +359,7 @@ func runLabelValues(t *testing.T, store *Store, ctx context.Context, ran storage
 		t.Errorf("LabelValues(service_name) = %v, want envoy-gateway and waf", svcValues)
 	}
 
-	resValues, err := store.LabelValues(ctx, "resource_name", ran)
+	resValues, err := store.LabelValues(ctx, "resource_name", nil, ran)
 	if err != nil {
 		t.Fatalf("LabelValues(resource_name): %v", err)
 	}
@@ -400,4 +402,61 @@ func containsStr(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// runScopedLabelValues checks that a selector narrows label values to the
+// lines it picks: the defect behind facets listing other load balancers' hosts.
+func runScopedLabelValues(t *testing.T, store *Store, ctx context.Context, ran storage.TimeRange) {
+	t.Helper()
+	envoy := []logql.LabelMatcher{{Label: "service_name", Operator: logql.MatchEqual, Value: "envoy-gateway"}}
+	values, err := store.LabelValues(ctx, "severity", envoy, ran)
+	if err != nil {
+		t.Fatalf("LabelValues(severity, envoy-gateway): %v", err)
+	}
+	slices.Sort(values)
+	if !slices.Equal(values, []string{"ERROR", "INFO"}) {
+		t.Errorf("scoped severity values = %v, want [ERROR INFO] (waf's DEBUG excluded)", values)
+	}
+}
+
+// runCountByLabels runs every count shape against the live server: grouped by
+// a column, grouped by an attribute under a matcher, an ungrouped total and a
+// line filter.
+func runCountByLabels(t *testing.T, store *Store, ctx context.Context, ran storage.TimeRange) {
+	t.Helper()
+	count := func(q storage.CountQuery) []storage.LabelCount {
+		t.Helper()
+		q.Range, q.Limit = ran, 100
+		out, err := store.CountByLabels(ctx, q)
+		if err != nil {
+			t.Fatalf("CountByLabels(%+v): %v", q, err)
+		}
+		return out
+	}
+
+	bySvc := count(storage.CountQuery{By: []string{"service_name"}})
+	if len(bySvc) != 2 || bySvc[0].Labels["service_name"] != "envoy-gateway" || bySvc[0].Count != 2 ||
+		bySvc[1].Labels["service_name"] != "waf" || bySvc[1].Count != 1 {
+		t.Errorf("by service_name = %+v, want envoy-gateway 2 then waf 1", bySvc)
+	}
+
+	waf := []logql.LabelMatcher{{Label: "service_name", Operator: logql.MatchEqual, Value: "waf"}}
+	byMethod := count(storage.CountQuery{Matchers: waf, By: []string{"http_method", "severity"}})
+	if len(byMethod) != 1 || byMethod[0].Count != 1 ||
+		byMethod[0].Labels["http_method"] != "GET" || byMethod[0].Labels["severity"] != "DEBUG" {
+		t.Errorf("waf by http_method, severity = %+v, want one GET/DEBUG group of 1", byMethod)
+	}
+
+	total := count(storage.CountQuery{})
+	if len(total) != 1 || total[0].Count != 3 || len(total[0].Labels) != 0 {
+		t.Errorf("ungrouped total = %+v, want 3 with no labels", total)
+	}
+
+	filtered := count(storage.CountQuery{
+		Filters: []logql.LineFilter{{Operator: logql.LineContains, Value: "line a"}},
+		By:      []string{"severity"},
+	})
+	if len(filtered) != 1 || filtered[0].Labels["severity"] != "INFO" || filtered[0].Count != 1 {
+		t.Errorf("line-filtered by severity = %+v, want INFO 1", filtered)
+	}
 }

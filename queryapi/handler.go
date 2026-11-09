@@ -11,8 +11,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,11 +75,6 @@ func (h *handler) lokiQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	q, ok := h.parseLogQL(w, raw)
-	if !ok {
-		return
-	}
-
 	now := time.Now().UTC()
 	at, err := parseTime(r.URL.Query().Get("time"), now, now)
 	if err != nil {
@@ -85,11 +82,72 @@ func (h *handler) lokiQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if logql.IsMetric(raw) {
+		h.serveCount(w, r, raw, at)
+		return
+	}
+
+	q, ok := h.parseLogQL(w, raw)
+	if !ok {
+		return
+	}
+
 	// An instant log query is a range ending at `time`; Loki looks back a window, not one nanosecond.
 	h.serveLogs(w, r, q, storage.TimeRange{Start: at.Add(-time.Hour), End: at})
 }
 
+// serveCount answers sum by (...) (count_over_time(<log query>[range])) at
+// `at`: one vector sample per group, counting lines in [at-range, at). Loki
+// leaves a group's absent labels out of its metric, and so does this.
+func (h *handler) serveCount(w http.ResponseWriter, r *http.Request, raw string, at time.Time) {
+	mq, err := logql.ParseMetric(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if h.cfg.MaxRange > 0 && mq.Range > h.cfg.MaxRange {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("range %s exceeds the maximum of %s", mq.Range, h.cfg.MaxRange))
+		return
+	}
+
+	ctx, cancel := h.withTimeout(r)
+	defer cancel()
+
+	counts, err := h.logStore.CountByLabels(ctx, storage.CountQuery{
+		Matchers: mq.Log.Matchers,
+		Filters:  mq.Log.Filters,
+		Range:    storage.TimeRange{Start: at.Add(-mq.Range), End: at},
+		By:       mq.By,
+		Limit:    h.cfg.MaxLimit,
+	})
+	if err != nil {
+		h.writeStorageError(w, err)
+		return
+	}
+
+	samples := make([]promSample, 0, len(counts))
+	for _, c := range counts {
+		if c.Count == 0 {
+			continue
+		}
+		metric := map[string]string{}
+		for name, value := range c.Labels {
+			metric[name] = value
+		}
+		samples = append(samples, promSample{
+			Metric: metric,
+			Value:  [2]any{float64(at.UnixNano()) / float64(time.Second), strconv.FormatUint(c.Count, 10)},
+		})
+	}
+	writeVector(w, samples)
+}
+
 func (h *handler) lokiQueryRange(w http.ResponseWriter, r *http.Request) {
+	if logql.IsMetric(r.URL.Query().Get("query")) {
+		writeError(w, http.StatusBadRequest,
+			"metric queries are answered as an instant vector on /loki/api/v1/query, not as a range")
+		return
+	}
 	q, ok := h.parseLogQL(w, r.URL.Query().Get("query"))
 	if !ok {
 		return
@@ -142,11 +200,16 @@ func (h *handler) lokiLabelNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) lokiLabelValues(w http.ResponseWriter, r *http.Request) {
-	// Validation only: the catalogue is not selector-filtered yet.
+	// The selector scopes which lines' values count, so one load balancer's
+	// hosts are not mixed with the rest of the project's. Like Loki, only its
+	// label matchers apply; line filters are accepted and ignored.
+	var matchers []logql.LabelMatcher
 	if raw := r.URL.Query().Get("query"); raw != "" {
-		if _, ok := h.parseLogQL(w, raw); !ok {
+		q, ok := h.parseLogQL(w, raw)
+		if !ok {
 			return
 		}
+		matchers = q.Matchers
 	}
 	tr, ok := h.timeRange(w, r)
 	if !ok {
@@ -155,7 +218,7 @@ func (h *handler) lokiLabelValues(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := h.withTimeout(r)
 	defer cancel()
 
-	values, err := h.logStore.LabelValues(ctx, r.PathValue("name"), tr)
+	values, err := h.logStore.LabelValues(ctx, r.PathValue("name"), matchers, tr)
 	if err != nil {
 		h.writeStorageError(w, err)
 		return

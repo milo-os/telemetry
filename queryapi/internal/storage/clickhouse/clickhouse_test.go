@@ -59,7 +59,7 @@ func TestNoProjectBeatsQuery(t *testing.T) {
 	if _, err := store.LabelNames(context.Background(), tr()); !errors.Is(err, storage.ErrNoProject) {
 		t.Errorf("LabelNames without a project = %v, want ErrNoProject", err)
 	}
-	if _, err := store.LabelValues(context.Background(), "severity", tr()); !errors.Is(err, storage.ErrNoProject) {
+	if _, err := store.LabelValues(context.Background(), "severity", nil, tr()); !errors.Is(err, storage.ErrNoProject) {
 		t.Errorf("LabelValues without a project = %v, want ErrNoProject", err)
 	}
 	if _, err := store.Series(context.Background(), nil, tr()); !errors.Is(err, storage.ErrNoProject) {
@@ -240,7 +240,7 @@ func TestBuildLabelNamesQuerySuppressesCollisions(t *testing.T) {
 }
 
 func TestBuildLabelValuesQueryColumnVsAttribute(t *testing.T) {
-	colQuery, colArgs := buildLabelValuesQuery("p", "severity", tr())
+	colQuery, colArgs := buildLabelValuesQuery("p", "severity", nil, tr())
 	if !strings.Contains(colQuery, "SELECT DISTINCT SeverityText FROM logs") {
 		t.Errorf("column label query incorrect: %s", colQuery)
 	}
@@ -248,7 +248,7 @@ func TestBuildLabelValuesQueryColumnVsAttribute(t *testing.T) {
 		t.Errorf("column label args = %d, want 3", len(colArgs))
 	}
 
-	attrQuery, attrArgs := buildLabelValuesQuery("p", "http_method", tr())
+	attrQuery, attrArgs := buildLabelValuesQuery("p", "http_method", nil, tr())
 	if !strings.Contains(attrQuery, "SELECT DISTINCT Labels[?] FROM logs") {
 		t.Errorf("attribute label query incorrect: %s", attrQuery)
 	}
@@ -265,7 +265,7 @@ func TestBuildLabelValuesQueryColumnVsAttribute(t *testing.T) {
 // from LogAttributes, so it returned nothing. Its values query must reach the
 // resource map.
 func TestBuildLabelValuesQueryReachesResourceOnlyKey(t *testing.T) {
-	query, args := buildLabelValuesQuery("p", "k8s_node_name", tr())
+	query, args := buildLabelValuesQuery("p", "k8s_node_name", nil, tr())
 	if !strings.Contains(query, "Labels[?]") {
 		t.Errorf("resource-only label cannot resolve:\n%s", query)
 	}
@@ -545,5 +545,65 @@ func TestMigrationPutsLogAttributesFirst(t *testing.T) {
 	}
 	if !strings.Contains(stmt, "replaceAll(k, '.', '_')") {
 		t.Errorf("migration does not sanitize dots to underscores:\n%s", stmt)
+	}
+}
+
+func TestBuildCountQueryGroupsByAliases(t *testing.T) {
+	query, args, err := buildCountQuery("p", storage.CountQuery{
+		Matchers: []logql.LabelMatcher{{Label: "route_name", Operator: logql.MatchEqual, Value: "r"}},
+		Filters:  []logql.LineFilter{{Operator: logql.LineContains, Value: "x"}},
+		Range:    tr(),
+		By:       []string{"response_code", "severity"},
+		Limit:    50,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT Labels[?] AS g0, SeverityText AS g1, count() AS c FROM logs WHERE "
+	if !strings.HasPrefix(query, want) {
+		t.Errorf("query = %s\nwant prefix %s", query, want)
+	}
+	if !strings.HasSuffix(query, " GROUP BY g0, g1 ORDER BY c DESC LIMIT ?") {
+		t.Errorf("query should group by aliases, largest first: %s", query)
+	}
+	// SELECT's map key, then project and bounds, matcher key and value,
+	// line filter, then the limit -- the order their ?s appear.
+	if args[0] != "response_code" || args[1] != "p" || args[4] != "route_name" || args[5] != "r" ||
+		args[6] != "x" || args[len(args)-1] != 50 {
+		t.Errorf("args = %v", args)
+	}
+	if got := strings.Count(query, "?"); got != len(args) {
+		t.Errorf("%d placeholders, %d args", got, len(args))
+	}
+}
+
+func TestBuildCountQueryUngroupedTotal(t *testing.T) {
+	query, args, err := buildCountQuery("p", storage.CountQuery{Range: tr(), Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(query, "SELECT count() FROM logs WHERE ProjectId = ?") || strings.Contains(query, "GROUP BY") {
+		t.Errorf("ungrouped count = %s", query)
+	}
+	if got := strings.Count(query, "?"); got != len(args) {
+		t.Errorf("%d placeholders, %d args", got, len(args))
+	}
+}
+
+func TestBuildCountQueryRejectsNonPositiveLimit(t *testing.T) {
+	if _, _, err := buildCountQuery("p", storage.CountQuery{Range: tr()}); !errors.Is(err, storage.ErrInvalidLimit) {
+		t.Errorf("err = %v, want ErrInvalidLimit", err)
+	}
+}
+
+func TestBuildLabelValuesQueryAppliesMatchers(t *testing.T) {
+	query, args := buildLabelValuesQuery("p", "response_code", []logql.LabelMatcher{
+		{Label: "route_name", Operator: logql.MatchEqual, Value: "r"},
+	}, tr())
+	if !strings.Contains(query, "AND Labels[?] = ?") {
+		t.Errorf("matcher not applied: %s", query)
+	}
+	if got := strings.Count(query, "?"); got != len(args) || args[len(args)-1] != "r" {
+		t.Errorf("%d placeholders, args %v", got, args)
 	}
 }

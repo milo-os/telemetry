@@ -92,6 +92,16 @@ func writeHealthProbeVector(w http.ResponseWriter, at time.Time) {
 	})
 }
 
+func writeVector(w http.ResponseWriter, samples []promSample) {
+	if samples == nil {
+		samples = []promSample{}
+	}
+	writeJSON(w, promVectorResponse{
+		Status: "success",
+		Data:   promVectorData{ResultType: "vector", Result: samples},
+	})
+}
+
 func writeData(w http.ResponseWriter, data any) {
 	writeJSON(w, struct {
 		Status string `json:"status"`
