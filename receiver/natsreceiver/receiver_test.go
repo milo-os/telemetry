@@ -3,6 +3,8 @@ package natsreceiver
 import (
 	"context"
 	"errors"
+	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/consumer/consumertest"
@@ -27,9 +31,14 @@ import (
 // on a random port, and tears it down at the end of the test.
 func startTestServer(t *testing.T) *natsserver.Server {
 	t.Helper()
+	return startTestServerOnPort(t, -1)
+}
+
+func startTestServerOnPort(t *testing.T, port int) *natsserver.Server {
+	t.Helper()
 	opts := &natsserver.Options{
 		Host:      "127.0.0.1",
-		Port:      -1,
+		Port:      port,
 		JetStream: true,
 		StoreDir:  t.TempDir(),
 	}
@@ -614,4 +623,188 @@ func TestNewUnmarshalers_UnsupportedEncoding(t *testing.T) {
 	require.Error(t, err)
 	_, err = newTracesUnmarshaler("bogus")
 	require.Error(t, err)
+}
+
+type statusRecordingHost struct {
+	component.Host
+	mu     sync.Mutex
+	events []*componentstatus.Event
+}
+
+func newStatusRecordingHost() *statusRecordingHost {
+	return &statusRecordingHost{Host: componenttest.NewNopHost()}
+}
+
+func (h *statusRecordingHost) Report(ev *componentstatus.Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.events = append(h.events, ev)
+}
+
+func (h *statusRecordingHost) fatalErrors() []error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var errs []error
+	for _, ev := range h.events {
+		if ev.Status() == componentstatus.StatusFatalError {
+			errs = append(errs, ev.Err())
+		}
+	}
+	return errs
+}
+
+func startJetStreamLogsReceiver(t *testing.T, srv *natsserver.Server, host component.Host, sink consumer.Logs) *natsReceiver {
+	t.Helper()
+	cfg := &Config{
+		URL:          srv.ClientURL(),
+		Stream:       "otlp",
+		ConsumerName: "test-consumer",
+		Logs:         SignalConfig{Subject: "otlp.logs", Encoding: "otlp_proto"},
+	}
+	cfg.TLS.Insecure = true
+	set := receivertest.NewNopSettings(receivertest.NopType)
+	rcv, err := newLogsReceiver(cfg, set, sink)
+	require.NoError(t, err)
+	require.NoError(t, rcv.Start(t.Context(), host))
+	t.Cleanup(func() { require.NoError(t, rcv.Shutdown(t.Context())) })
+	return rcv
+}
+
+func TestReceiver_ReconnectsWithoutLimit(t *testing.T) {
+	srv := startTestServer(t)
+	createTestStream(t, srv, "otlp", "otlp.>")
+	createTestConsumer(t, srv, "otlp", "test-consumer", "otlp.logs")
+
+	rcv := startJetStreamLogsReceiver(t, srv, componenttest.NewNopHost(), new(consumertest.LogsSink))
+
+	require.Equal(t, -1, rcv.conn.Opts.MaxReconnect)
+}
+
+func TestReceiver_ReportsFatalWhenConnectionCloses(t *testing.T) {
+	srv := startTestServer(t)
+	createTestStream(t, srv, "otlp", "otlp.>")
+	createTestConsumer(t, srv, "otlp", "test-consumer", "otlp.logs")
+
+	host := newStatusRecordingHost()
+	rcv := startJetStreamLogsReceiver(t, srv, host, new(consumertest.LogsSink))
+
+	rcv.conn.Close()
+
+	require.Eventually(t, func() bool {
+		return len(host.fatalErrors()) > 0
+	}, 5*time.Second, 50*time.Millisecond, "a closed nats connection must be reported as fatal so the collector exits")
+}
+
+func TestReceiver_ReportsFatalWhenConsumerDeleted(t *testing.T) {
+	srv := startTestServer(t)
+	js := createTestStream(t, srv, "otlp", "otlp.>")
+	createTestConsumer(t, srv, "otlp", "test-consumer", "otlp.logs")
+
+	host := newStatusRecordingHost()
+	sink := new(consumertest.LogsSink)
+	startJetStreamLogsReceiver(t, srv, host, sink)
+
+	ld := plog.NewLogs()
+	ld.ResourceLogs().AppendEmpty().ScopeLogs().AppendEmpty().LogRecords().AppendEmpty().Body().SetStr("before-delete")
+	payload, err := (&plog.ProtoMarshaler{}).MarshalLogs(ld)
+	require.NoError(t, err)
+	_, err = js.Publish(t.Context(), "otlp.logs", payload)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return sink.LogRecordCount() == 1
+	}, 5*time.Second, 50*time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, js.DeleteConsumer(ctx, "otlp", "test-consumer"))
+
+	require.Eventually(t, func() bool {
+		for _, err := range host.fatalErrors() {
+			if errors.Is(err, jetstream.ErrConsumerDeleted) {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 50*time.Millisecond, "a deleted consumer must be reported as fatal so the collector exits")
+}
+
+func TestReceiver_ShutdownReportsNoFatal(t *testing.T) {
+	srv := startTestServer(t)
+	createTestStream(t, srv, "otlp", "otlp.>")
+	createTestConsumer(t, srv, "otlp", "test-consumer", "otlp.logs")
+
+	cfg := &Config{
+		URL:          srv.ClientURL(),
+		Stream:       "otlp",
+		ConsumerName: "test-consumer",
+		Logs:         SignalConfig{Subject: "otlp.logs", Encoding: "otlp_proto"},
+	}
+	cfg.TLS.Insecure = true
+	set := receivertest.NewNopSettings(receivertest.NopType)
+	rcv, err := newLogsReceiver(cfg, set, new(consumertest.LogsSink))
+	require.NoError(t, err)
+	host := newStatusRecordingHost()
+	require.NoError(t, rcv.Start(t.Context(), host))
+	require.NoError(t, rcv.Shutdown(t.Context()))
+
+	require.Eventually(t, rcv.conn.IsClosed, 5*time.Second, 50*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
+	require.Empty(t, host.fatalErrors())
+}
+
+func startJetStreamLogsReceiverWithShortPulls(t *testing.T, srv *natsserver.Server, host component.Host) *natsReceiver {
+	t.Helper()
+	cfg := &Config{
+		URL:          srv.ClientURL(),
+		Stream:       "otlp",
+		ConsumerName: "test-consumer",
+		Logs:         SignalConfig{Subject: "otlp.logs", Encoding: "otlp_proto"},
+	}
+	cfg.TLS.Insecure = true
+	set := receivertest.NewNopSettings(receivertest.NopType)
+	rcv, err := newLogsReceiver(cfg, set, new(consumertest.LogsSink))
+	require.NoError(t, err)
+	rcv.consumeOpts = []jetstream.PullConsumeOpt{jetstream.PullExpiry(time.Second)}
+	require.NoError(t, rcv.Start(t.Context(), host))
+	t.Cleanup(func() { require.NoError(t, rcv.Shutdown(t.Context())) })
+	return rcv
+}
+
+func TestReceiver_ReportsFatalWhenConsumerMissingAfterBrokerReturns(t *testing.T) {
+	srv := startTestServer(t)
+	createTestStream(t, srv, "otlp", "otlp.>")
+	createTestConsumer(t, srv, "otlp", "test-consumer", "otlp.logs")
+	port := srv.Addr().(*net.TCPAddr).Port
+
+	host := newStatusRecordingHost()
+	startJetStreamLogsReceiverWithShortPulls(t, srv, host)
+
+	srv.Shutdown()
+	srv.WaitForShutdown()
+	startTestServerOnPort(t, port)
+
+	require.Eventually(t, func() bool {
+		for _, err := range host.fatalErrors() {
+			if errors.Is(err, jetstream.ErrConsumerNotFound) || errors.Is(err, jetstream.ErrStreamNotFound) {
+				return true
+			}
+		}
+		return false
+	}, 15*time.Second, 100*time.Millisecond, "a consumer missing after the broker returns must be reported as fatal so the collector exits")
+}
+
+func TestReceiver_BrokerOutageReportsNoFatal(t *testing.T) {
+	srv := startTestServer(t)
+	createTestStream(t, srv, "otlp", "otlp.>")
+	createTestConsumer(t, srv, "otlp", "test-consumer", "otlp.logs")
+
+	host := newStatusRecordingHost()
+	rcv := startJetStreamLogsReceiverWithShortPulls(t, srv, host)
+
+	srv.Shutdown()
+	srv.WaitForShutdown()
+	time.Sleep(3 * time.Second)
+
+	require.Empty(t, host.fatalErrors())
+	require.False(t, rcv.conn.IsClosed())
 }

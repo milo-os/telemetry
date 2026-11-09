@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componentstatus"
 	"go.opentelemetry.io/collector/consumer"
 	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pdata/pmetric"
@@ -40,6 +41,8 @@ func newObsReport(set receiver.Settings) (*receiverhelper.ObsReport, error) {
 // loop while a transient condition (e.g. ClickHouse briefly unavailable) clears.
 const nakRedeliveryDelay = 2 * time.Second
 
+const consumerLookupTimeout = 5 * time.Second
+
 // errUnmarshal wraps a payload-unmarshal failure. Redelivering the same
 // malformed payload can never succeed, so handleJetStream treats it as
 // non-retryable: it acks (drops) the message instead of nak'ing it into an
@@ -55,6 +58,7 @@ type natsReceiver struct {
 	cfg    *Config
 	set    receiver.Settings
 	signal SignalConfig
+	host   component.Host
 
 	// deliverPayload unmarshals payload into the signal-specific pdata type
 	// and forwards it to this instance's consumer. Wraps an unmarshal failure
@@ -72,6 +76,9 @@ type natsReceiver struct {
 	lastDelivery      atomic.Int64
 	lastDeliveryGauge metric.Float64ObservableGauge
 	resubscribeCount  metric.Int64Counter
+
+	consumeOpts []jetstream.PullConsumeOpt
+	running     atomic.Bool
 }
 
 func newLogsReceiver(cfg *Config, set receiver.Settings, next consumer.Logs) (*natsReceiver, error) {
@@ -196,7 +203,8 @@ func newTracesUnmarshaler(encoding string) (ptrace.Unmarshaler, error) {
 	}
 }
 
-func (r *natsReceiver) Start(ctx context.Context, _ component.Host) error {
+func (r *natsReceiver) Start(ctx context.Context, host component.Host) error {
+	r.host = host
 	meter := r.set.MeterProvider.Meter("go.datum.net/o11y/receiver/natsreceiver")
 
 	lastDeliveryGauge, err := meter.Float64ObservableGauge(
@@ -225,7 +233,13 @@ func (r *natsReceiver) Start(ctx context.Context, _ component.Host) error {
 	}
 	r.resubscribeCount = resubscribeCount
 
-	opts := []nats.Option{nats.Name(r.set.ID.String())}
+	opts := []nats.Option{
+		nats.Name(r.set.ID.String()),
+		nats.MaxReconnects(-1),
+		nats.ClosedHandler(func(*nats.Conn) {
+			r.reportFatal(errors.New("nats connection closed"))
+		}),
+	}
 	if r.cfg.CredentialsFile != "" {
 		opts = append(opts, nats.UserCredentials(r.cfg.CredentialsFile))
 	}
@@ -245,10 +259,15 @@ func (r *natsReceiver) Start(ctx context.Context, _ component.Host) error {
 
 	switch r.cfg.Stream {
 	case "":
-		return r.startCoreNATS(conn)
+		err = r.startCoreNATS(conn)
 	default:
-		return r.startJetStream(ctx, conn)
+		err = r.startJetStream(ctx, conn)
 	}
+	if err != nil {
+		return err
+	}
+	r.running.Store(true)
+	return nil
 }
 
 func (r *natsReceiver) startCoreNATS(conn *nats.Conn) error {
@@ -272,13 +291,22 @@ func (r *natsReceiver) startJetStream(ctx context.Context, conn *nats.Conn) erro
 		conn.Close()
 		return fmt.Errorf("binding to consumer %q on stream %q: %w", r.cfg.ConsumerName, r.cfg.Stream, err)
 	}
-	consumeCtx, err := cons.Consume(r.handleJetStream, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+	consumeOpts := append([]jetstream.PullConsumeOpt{jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+		if errors.Is(err, jetstream.ErrConsumerDeleted) || errors.Is(err, jetstream.ErrBadRequest) {
+			r.set.Logger.Error("nats jetstream consumer is gone, stopping", zap.Error(err))
+			r.reportFatal(fmt.Errorf("consumer %q on stream %q: %w", r.cfg.ConsumerName, r.cfg.Stream, err))
+			return
+		}
+		if errors.Is(err, jetstream.ErrNoHeartbeat) {
+			go r.checkConsumerExists(cons)
+		}
 		// Consume's own heartbeat/re-pull logic has already recovered by the
 		// time this fires (e.g. after a consumer leader election); record it
 		// in case resubscribes become frequent enough to alert on.
 		r.set.Logger.Warn("nats jetstream consume error, resubscribing", zap.Error(err))
 		r.resubscribeCount.Add(ctx, 1)
-	}))
+	})}, r.consumeOpts...)
+	consumeCtx, err := cons.Consume(r.handleJetStream, consumeOpts...)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("starting consume on %q: %w", r.cfg.ConsumerName, err)
@@ -339,14 +367,37 @@ func (r *natsReceiver) deliver(ctx context.Context, payload []byte) error {
 }
 
 func (r *natsReceiver) Shutdown(context.Context) error {
+	r.running.Store(false)
 	if r.consumeCtx != nil {
 		r.consumeCtx.Stop()
 	}
 	if r.coreNATSSub != nil {
 		_ = r.coreNATSSub.Unsubscribe()
 	}
-	if r.conn != nil {
+	switch {
+	case r.conn == nil || r.conn.IsClosed():
+		return nil
+	case r.conn.IsReconnecting():
+		r.conn.Close()
+		return nil
+	default:
 		return r.conn.Drain()
 	}
-	return nil
+}
+
+func (r *natsReceiver) reportFatal(err error) {
+	if !r.running.Load() {
+		return
+	}
+	componentstatus.ReportStatus(r.host, componentstatus.NewFatalErrorEvent(err))
+}
+
+func (r *natsReceiver) checkConsumerExists(cons jetstream.Consumer) {
+	ctx, cancel := context.WithTimeout(context.Background(), consumerLookupTimeout)
+	defer cancel()
+	_, err := cons.Info(ctx)
+	if errors.Is(err, jetstream.ErrConsumerNotFound) || errors.Is(err, jetstream.ErrStreamNotFound) {
+		r.set.Logger.Error("nats jetstream consumer is gone, stopping", zap.Error(err))
+		r.reportFatal(fmt.Errorf("consumer %q on stream %q: %w", r.cfg.ConsumerName, r.cfg.Stream, err))
+	}
 }

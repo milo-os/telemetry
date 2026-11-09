@@ -81,6 +81,8 @@ go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/collector/component v1.60.0 h1:LpIjHMn7OOjUsFR84ROc2kqPbP1xnKyDCGi7ZVqEaKU=
 go.opentelemetry.io/collector/component v1.60.0/go.mod h1:Rag+NNgiGIkcGYlcTfJtMh2l0T5XS1KNv9Wjw9yofAk=
+go.opentelemetry.io/collector/component/componentstatus v0.154.0 h1:4ifSCy2Y332iZ5AldHt9ujVjY6XKxhVe/hND4TSDarg=
+go.opentelemetry.io/collector/component/componentstatus v0.154.0/go.mod h1:ZsBIax7tvvODn0XqTyhTfKZjm96zVKnLUKvlN8SHFjo=
 go.opentelemetry.io/collector/component/componenttest v0.154.0 h1:uH06tUatG4S45A/f3sFENMMAMzWURmgxKK3MAbVZAUI=
 go.opentelemetry.io/collector/component/componenttest v0.154.0/go.mod h1:SQ1JRosjFAZ7kN2yNHNcNakOliqrP0QxglKcYyUrUpQ=
 go.opentelemetry.io/collector/config/configopaque v1.60.0 h1:qPTBw0RSsw2lOOP0yPzCl3nGxvnb70Dxiv8NoWJo1os=
