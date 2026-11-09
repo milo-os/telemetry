@@ -5,6 +5,7 @@ package logql
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,42 +172,59 @@ func parseCountOverTime(s string) (*Query, time.Duration, error) {
 // quoted strings so a regex like "(a|b)" in a filter cannot unbalance it.
 func closingParen(s string) (int, error) {
 	depth := 0
-	inQuote := false
 	for i := 0; i < len(s); i++ {
-		switch {
-		case inQuote && s[i] == '\\':
-			i++
-		case s[i] == '"':
-			inQuote = !inQuote
-		case inQuote:
-		case s[i] == '(':
+		if isQuote(s[i]) {
+			n, err := quotedLen(s[i:])
+			if err != nil {
+				return 0, err
+			}
+			i += n - 1
+			continue
+		}
+		switch s[i] {
+		case '(':
 			depth++
-		case s[i] == ')':
+		case ')':
 			depth--
 			if depth == 0 {
 				return i, nil
 			}
 		}
 	}
-	if inQuote {
-		return 0, errors.New("logql: unterminated string")
-	}
 	return 0, errors.New("logql: unbalanced parentheses")
 }
 
-// lastUnquoted returns the index of the last c outside a quoted string.
+// lastUnquoted returns the index of the last c outside a quoted string, or -1.
+// An unterminated string ends the scan; Parse reports it.
 func lastUnquoted(s string, c byte) int {
 	last := -1
-	inQuote := false
 	for i := 0; i < len(s); i++ {
-		switch {
-		case inQuote && s[i] == '\\':
-			i++
-		case s[i] == '"':
-			inQuote = !inQuote
-		case !inQuote && s[i] == c:
+		if isQuote(s[i]) {
+			n, err := quotedLen(s[i:])
+			if err != nil {
+				return last
+			}
+			i += n - 1
+			continue
+		}
+		if s[i] == c {
 			last = i
 		}
 	}
 	return last
+}
+
+// isQuote reports whether b opens a string Parse accepts: "...", `...` or '...'.
+func isQuote(b byte) bool {
+	return b == '"' || b == '`' || b == '\''
+}
+
+// quotedLen returns the length of the string literal at the start of s, using
+// the same rules as Parse, so backtick raw strings have no escapes.
+func quotedLen(s string) (int, error) {
+	quoted, err := strconv.QuotedPrefix(s)
+	if err != nil {
+		return 0, errors.New("logql: unterminated string")
+	}
+	return len(quoted), nil
 }

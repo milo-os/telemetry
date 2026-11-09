@@ -155,8 +155,9 @@ func (s *Store) Series(ctx context.Context, matchers []logql.LabelMatcher, tr st
 	return out, nil
 }
 
-// scanStrings drains a single-string-column result (label names/values) into a
-// sorted, deduped slice.
+// CountByLabels counts the project's lines matching q in its window, one row
+// per distinct value of q.By (one total row when By is empty), most frequent
+// first. A label a line lacks comes back absent from that row's Labels.
 func (s *Store) CountByLabels(ctx context.Context, q storage.CountQuery) (out []storage.LabelCount, err error) {
 	projectID, err := project(ctx)
 	if err != nil {
@@ -197,6 +198,8 @@ func (s *Store) CountByLabels(ctx context.Context, q storage.CountQuery) (out []
 	return out, nil
 }
 
+// scanStrings drains a single-string-column result (label names/values) into a
+// sorted, deduped slice.
 func (s *Store) scanStrings(ctx context.Context, query string, args []any) (out []string, err error) {
 	rows, err := s.conn.Query(ctx, query, args...)
 	if err != nil {

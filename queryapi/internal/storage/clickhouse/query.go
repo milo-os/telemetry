@@ -225,8 +225,11 @@ func buildCountQuery(project string, q storage.CountQuery) (string, []any, error
 	}
 	args = append(args, wargs...)
 	args = append(args, q.Limit)
-	return fmt.Sprintf("SELECT %s, count() AS c FROM logs WHERE %s GROUP BY %s ORDER BY c DESC LIMIT ?",
-		strings.Join(selects, ", "), where, strings.Join(aliases, ", ")), args, nil
+	// Equal counts break ties by label value, as the fake store does, so a
+	// facet list keeps its order between refreshes.
+	groups := strings.Join(aliases, ", ")
+	return fmt.Sprintf("SELECT %s, count() AS c FROM logs WHERE %s GROUP BY %s ORDER BY c DESC, %s LIMIT ?",
+		strings.Join(selects, ", "), where, groups, groups), args, nil
 }
 
 // seriesAllowlist bounds Series to a small, fixed combination so the distinct

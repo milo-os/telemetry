@@ -563,7 +563,7 @@ func TestBuildCountQueryGroupsByAliases(t *testing.T) {
 	if !strings.HasPrefix(query, want) {
 		t.Errorf("query = %s\nwant prefix %s", query, want)
 	}
-	if !strings.HasSuffix(query, " GROUP BY g0, g1 ORDER BY c DESC LIMIT ?") {
+	if !strings.HasSuffix(query, " GROUP BY g0, g1 ORDER BY c DESC, g0, g1 LIMIT ?") {
 		t.Errorf("query should group by aliases, largest first: %s", query)
 	}
 	// SELECT's map key, then project and bounds, matcher key and value,

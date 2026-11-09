@@ -36,6 +36,8 @@ func TestParseMetricForms(t *testing.T) {
 		{`sum(count_over_time({route_name="a", method="GET"} |= "x" [1h])) by (host, method)`, []string{"host", "method"}, time.Hour, 2, 1},
 		{`sum(count_over_time({a="b"}[5m]))`, nil, 5 * time.Minute, 1, 0},
 		{`sum by(a,a)(count_over_time({a=~"x[0-9]+"} |~ "(GET|POST) [a]" [1d]))`, []string{"a"}, 24 * time.Hour, 1, 1},
+		{"sum by (a) (count_over_time({a=\"b\"} |= `)` [5m]))", []string{"a"}, 5 * time.Minute, 1, 1},
+		{"sum(count_over_time({a=\"b\"} |= `[` != \"(\" [5m]))", nil, 5 * time.Minute, 1, 2},
 	}
 	for _, tt := range tests {
 		q, err := ParseMetric(tt.raw)
@@ -68,6 +70,7 @@ func TestParseMetricRejects(t *testing.T) {
 		`sum(count_over_time({a="b"}[5m])) + 1`:                 "unexpected",
 		`sum(count_over_time({a="b"} | json [5m]))`:             `"json" is not supported`,
 		`sum(count_over_time({a="b"}[5m])`:                      "unbalanced",
+		"sum(count_over_time({a=\"b\"} |= `)[5m]))":             "unterminated string",
 	} {
 		_, err := ParseMetric(raw)
 		if err == nil || !strings.Contains(err.Error(), want) {
