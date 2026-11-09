@@ -65,16 +65,7 @@ func buildLogsQuery(project string, q storage.LogQuery) (string, []any, error) {
 	}
 
 	where, args := projectRange(project, q.Range)
-	for _, m := range q.Matchers {
-		cond, margs := matcherFragment(m)
-		where += " AND " + cond
-		args = append(args, margs...)
-	}
-	for _, f := range q.Filters {
-		cond, fargs := lineFilterFragment(f)
-		where += " AND " + cond
-		args = append(args, fargs...)
-	}
+	where, args = appendConstraints(where, args, q.Matchers, q.Filters)
 
 	order := "ASC"
 	if q.Direction == storage.DirectionBackward {
@@ -182,10 +173,63 @@ func buildLabelNamesQuery(project string, tr storage.TimeRange) (string, []any) 
 // map access, matching openapi.yaml's /label/{name}/values contract. Any map
 // key parameter is bound before the WHERE args because its ? appears first in
 // the SELECT text and bindings are positional.
-func buildLabelValuesQuery(project, label string, tr storage.TimeRange) (string, []any) {
+//
+// Matchers narrow it to the lines a selector picks, so a caller listing one
+// load balancer's hosts does not see every host in the project.
+func buildLabelValuesQuery(project, label string, matchers []logql.LabelMatcher, tr storage.TimeRange) (string, []any) {
 	expr, eargs := labelExpr(label)
 	where, wargs := projectRange(project, tr)
+	where, wargs = appendConstraints(where, wargs, matchers, nil)
 	return fmt.Sprintf("SELECT DISTINCT %s FROM logs WHERE %s", expr, where), append(eargs, wargs...)
+}
+
+// appendConstraints ANDs matchers and line filters onto a WHERE fragment.
+func appendConstraints(where string, args []any, matchers []logql.LabelMatcher, filters []logql.LineFilter) (string, []any) {
+	for _, m := range matchers {
+		cond, margs := matcherFragment(m)
+		where += " AND " + cond
+		args = append(args, margs...)
+	}
+	for _, f := range filters {
+		cond, fargs := lineFilterFragment(f)
+		where += " AND " + cond
+		args = append(args, fargs...)
+	}
+	return where, args
+}
+
+// buildCountQuery counts matching lines per distinct combination of the By
+// labels, largest groups first, in one GROUP BY. Each By label is selected
+// under a positional alias (g0, g1, ...) so GROUP BY names the alias and its
+// map-key parameter is bound once, ahead of the WHERE args, in SELECT order.
+// An empty By is a plain count with no grouping or limit.
+func buildCountQuery(project string, q storage.CountQuery) (string, []any, error) {
+	if q.Limit <= 0 {
+		return "", nil, storage.ErrInvalidLimit
+	}
+	where, wargs := projectRange(project, q.Range)
+	where, wargs = appendConstraints(where, wargs, q.Matchers, q.Filters)
+
+	if len(q.By) == 0 {
+		return fmt.Sprintf("SELECT count() FROM logs WHERE %s", where), wargs, nil
+	}
+
+	selects := make([]string, len(q.By))
+	aliases := make([]string, len(q.By))
+	var args []any
+	for i, label := range q.By {
+		expr, eargs := labelExpr(label)
+		aliases[i] = fmt.Sprintf("g%d", i)
+		selects[i] = expr + " AS " + aliases[i]
+		args = append(args, eargs...)
+	}
+	args = append(args, wargs...)
+	args = append(args, q.Limit)
+	// Equal counts break ties by label value, as the fake store does, so a
+	// facet list keeps its order between refreshes.
+	groups := strings.Join(aliases, ", ")
+	return fmt.Sprintf("SELECT %s, count() AS c FROM logs WHERE %s GROUP BY %s ORDER BY c DESC, %s LIMIT ?",
+		strings.Join(selects, ", "), where, groups, groups), args, nil
 }
 
 // seriesAllowlist bounds Series to a small, fixed combination so the distinct

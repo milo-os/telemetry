@@ -94,13 +94,16 @@ func (s *LogStore) LabelNames(ctx context.Context, _ storage.TimeRange) ([]strin
 	return names, nil
 }
 
-func (s *LogStore) LabelValues(ctx context.Context, label string, _ storage.TimeRange) ([]string, error) {
+func (s *LogStore) LabelValues(ctx context.Context, label string, matchers []logql.LabelMatcher, _ storage.TimeRange) ([]string, error) {
 	if _, ok := miloauth.ProjectID(ctx); !ok {
 		return nil, storage.ErrNoProject
 	}
 
 	seen := map[string]bool{}
 	for _, ls := range catalogue() {
+		if !matchesLabels(matchers, ls) {
+			continue
+		}
 		if v, ok := ls[label]; ok {
 			seen[v] = true
 		}
@@ -111,6 +114,64 @@ func (s *LogStore) LabelValues(ctx context.Context, label string, _ storage.Time
 	}
 	sort.Strings(values)
 	return values, nil
+}
+
+// maxCountRows bounds how many synthetic rows CountByLabels walks, so a
+// month-long window at a high fake rate cannot stall a request.
+const maxCountRows = 1_000_000
+
+// CountByLabels counts the generated rows the query would return, grouped by
+// the By labels, largest groups first.
+func (s *LogStore) CountByLabels(ctx context.Context, q storage.CountQuery) ([]storage.LabelCount, error) {
+	if _, ok := miloauth.ProjectID(ctx); !ok {
+		return nil, storage.ErrNoProject
+	}
+	if q.Limit <= 0 {
+		return nil, storage.ErrInvalidLimit
+	}
+	it := newIterator(ctx, s.interval, storage.LogQuery{
+		Matchers:  q.Matchers,
+		Filters:   q.Filters,
+		Range:     q.Range,
+		Limit:     maxCountRows,
+		Direction: storage.DirectionForward,
+	})
+	defer func() { _ = it.Close() }()
+
+	groups := map[string]*storage.LabelCount{}
+	for it.Next() {
+		row := it.Row()
+		labels := storage.LabelSet{}
+		for _, name := range q.By {
+			if v := row.Labels[name]; v != "" {
+				labels[name] = v
+			}
+		}
+		key := labels.Key()
+		if g, ok := groups[key]; ok {
+			g.Count++
+			continue
+		}
+		groups[key] = &storage.LabelCount{Labels: labels, Count: 1}
+	}
+	if err := it.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]storage.LabelCount, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, *g)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Labels.Key() < out[j].Labels.Key()
+	})
+	if len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
 }
 
 func (s *LogStore) Series(ctx context.Context, matchers []logql.LabelMatcher, _ storage.TimeRange) ([]storage.LabelSet, error) {

@@ -76,11 +76,16 @@ paths:
         - $ref: "#/components/parameters/Direction"
       responses:
         "200":
-          description: Matching log lines, as Loki-shaped streams.
+          description: >-
+            Matching log lines, as Loki-shaped streams; or, for
+            `sum [by (...)] (count_over_time(...))`, one vector sample per
+            group counting lines in [time - range, time).
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/LokiQueryResponse"
+                anyOf:
+                  - $ref: "#/components/schemas/LokiQueryResponse"
+                  - $ref: "#/components/schemas/LokiVectorResponse"
         "400":
           $ref: "#/components/responses/BadQuery"
         "401":
@@ -179,9 +184,10 @@ paths:
         - name: query
           in: query
           description: >-
-            Optional LogQL label-matcher subset (no line filters) to further
-            scope which streams' values are considered, e.g.
-            `{service_name="foo"}`.
+            Optional stream selector scoping which lines' values are listed,
+            e.g. `{service_name="foo"}`: only values carried by lines its label
+            matchers select are returned. Line filters are accepted and
+            ignored, as in Loki.
           schema:
             type: string
       responses:
@@ -453,8 +459,16 @@ components:
       description: >-
         LogQL subset: label matchers (`{service_name="foo", severity="ERROR"}`)
         and line filters (`|= "text"`, `!= "text"`, `|~ "regex"`, `!~ "regex"`).
-        Metric-style aggregations (count_over_time, rate), parser expressions
-        (| json, | logfmt), and line_format/label_format are rejected with 400.
+        Parser expressions (| json, | logfmt) and line_format/label_format
+        are rejected with 400.
+
+
+        The one metric form, on /query only, counts lines per label value:
+        `sum by (label, ...) (count_over_time(<selector and filters> [range]))`,
+        with `by` before or after the parentheses, or omitted for a total. At
+        most 4 grouping labels; the range may not exceed the configured
+        maximum. Other aggregations and functions (rate, bytes_over_time, a
+        bare count_over_time) are rejected with 400.
 
 
         Label names are `[_A-Za-z][_A-Za-z0-9]*` — dots are not valid, so an
@@ -670,6 +684,49 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/LokiStream"
+
+    LokiVectorSample:
+      type: object
+      required: [metric, value]
+      properties:
+        metric:
+          type: object
+          additionalProperties:
+            type: string
+          description: >-
+            The group's `by` labels. A label the group's lines did not carry
+            is left out, as in Loki.
+        value:
+          type: array
+          description: "[unixSeconds, count]: a number and a string, as in Loki."
+          items:
+            oneOf:
+              - type: number
+              - type: string
+          minItems: 2
+          maxItems: 2
+
+    LokiVectorResponse:
+      type: object
+      required: [status, data]
+      properties:
+        status:
+          type: string
+          enum: [success]
+        data:
+          type: object
+          required: [resultType, result]
+          properties:
+            resultType:
+              type: string
+              enum: [vector]
+            result:
+              type: array
+              description: >-
+                One sample per group, largest first, capped at the
+                configured row limit. Groups with no lines are omitted.
+              items:
+                $ref: "#/components/schemas/LokiVectorSample"
 
     PromQueryForm:
       type: object

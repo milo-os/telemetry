@@ -25,8 +25,9 @@ func Parse(raw string) (*Query, error) {
 		return nil, errors.New("logql: empty query")
 	}
 	if s[0] != '{' {
-		return nil, errors.New("logql: metric queries and aggregations are not supported; " +
-			"a query must be a stream selector, e.g. {service_name=\"envoy-gateway\"}")
+		return nil, errors.New("logql: metric queries are not supported here; a log query " +
+			"must be a stream selector, e.g. {service_name=\"envoy-gateway\"}. The one " +
+			"metric form, sum by (label) (count_over_time({...}[5m])), is accepted on /query")
 	}
 
 	end, err := closingBrace(s)

@@ -195,7 +195,7 @@ func TestDiscovery(t *testing.T) {
 		}
 	}
 
-	values, err := s.LabelValues(testCtx(), "severity", testRange())
+	values, err := s.LabelValues(testCtx(), "severity", nil, testRange())
 	if err != nil {
 		t.Fatalf("LabelValues: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestDiscovery(t *testing.T) {
 		t.Fatalf("severity values = %v, want 4", values)
 	}
 
-	if _, err := s.LabelValues(testCtx(), "nope", testRange()); err != nil {
+	if _, err := s.LabelValues(testCtx(), "nope", nil, testRange()); err != nil {
 		t.Fatalf("LabelValues for an unknown label should be empty, not an error: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestLabelNamesAreAllResolvable(t *testing.T) {
 		if _, err := logql.Parse("{" + name + `="x"}`); err != nil {
 			t.Errorf("advertised name %q is not a valid LogQL label: %v", name, err)
 		}
-		values, err := logStore.LabelValues(ctx, name, ran)
+		values, err := logStore.LabelValues(ctx, name, nil, ran)
 		if err != nil {
 			t.Fatalf("LabelValues(%q): %v", name, err)
 		}

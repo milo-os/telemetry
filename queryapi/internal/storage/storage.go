@@ -57,6 +57,25 @@ type LogQuery struct {
 	Direction Direction
 }
 
+// CountQuery counts log lines per distinct combination of the By labels,
+// with every constraint pushed down. An empty By counts all matching lines.
+type CountQuery struct {
+	Matchers []logql.LabelMatcher
+	Filters  []logql.LineFilter
+	Range    TimeRange
+	By       []string
+
+	// Limit bounds the number of groups returned, largest first; must be > 0.
+	Limit int
+}
+
+// LabelCount is one group of a CountQuery: the By labels' values (absent
+// labels omitted) and how many lines carried them.
+type LabelCount struct {
+	Labels LabelSet
+	Count  uint64
+}
+
 // LabelSet is a stream's labels.
 type LabelSet map[string]string
 
@@ -112,7 +131,12 @@ type LogIterator interface {
 type LogStore interface {
 	QueryLogs(ctx context.Context, q LogQuery) (LogIterator, error)
 	LabelNames(ctx context.Context, tr TimeRange) ([]string, error)
-	LabelValues(ctx context.Context, label string, tr TimeRange) ([]string, error)
+	// LabelValues lists one label's distinct values in the window, among lines
+	// matching every matcher (none: the whole project).
+	LabelValues(ctx context.Context, label string, matchers []logql.LabelMatcher, tr TimeRange) ([]string, error)
+
+	// CountByLabels serves sum by (...) (count_over_time(...)).
+	CountByLabels(ctx context.Context, q CountQuery) ([]LabelCount, error)
 
 	// Series is called once per match[] selector; the handler unions and dedupes
 	// the results.
