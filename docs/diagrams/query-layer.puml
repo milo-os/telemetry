@@ -1,0 +1,23 @@
+@startuml query-layer
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Telemetry query layer: containers
+
+Person(user, "Tenant user", "Queries a project's logs with datumctl telemetry, or through the portal")
+
+System_Ext(controlplane, "Control plane", "Routes /projects/<id>/control-plane in-process; its aggregator proxies the o11y.miloapis.com APIService to queryapi; answers SubjectAccessReviews")
+
+System_Boundary(ql, "Telemetry query layer") {
+    Container(queryapi, "queryapi", "Go, aggregated API server", "Loki- and Prometheus-shaped HTTP API. Verifies the front-proxy certificate, authorizes each route, binds the project from the identity")
+    ContainerDb(clickhouse, "ClickHouse", "o11y.logs", "Row policy queryapi_project_isolation on telemetry_project_id")
+    ContainerDb(metrics, "Metric store", "VictoriaMetrics", "Prometheus-compatible query API; enforces extra_label")
+}
+
+Rel(user, controlplane, "Queries logs and metrics", "HTTPS, bearer token")
+Rel(controlplane, queryapi, "Proxies the request with project in X-Remote-Extra-*", "HTTPS, front-proxy client cert")
+Rel(queryapi, controlplane, "SubjectAccessReview per route", "HTTPS")
+Rel(queryapi, clickhouse, "Log queries with telemetry_project_id", "Native TLS, client cert")
+Rel(queryapi, metrics, "PromQL with extra_label=project", "HTTP")
+
+SHOW_LEGEND()
+@enduml

@@ -1,0 +1,20 @@
+version: '3'
+
+vars:
+  PLANTUML_IMAGE: plantuml/plantuml:1.2026.4
+  MARKDOWNLINT_IMAGE: davidanson/markdownlint-cli2:v0.24.0
+
+tasks:
+  diagrams:
+    desc: Render the PlantUML diagrams in docs/diagrams to PNG
+    sources:
+      - diagrams/*.puml
+    generates:
+      - diagrams/*.png
+    cmds:
+      - docker run --rm -v "{{.TASKFILE_DIR}}/diagrams:/data" {{.PLANTUML_IMAGE}} -tpng /data/*.puml
+
+  lint:
+    desc: Lint the Markdown in docs/
+    cmds:
+      - docker run --rm -v "{{.TASKFILE_DIR}}:/workdir" -w /workdir {{.MARKDOWNLINT_IMAGE}}

@@ -1,0 +1,31 @@
+@startuml export-policies
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Export policies: containers
+
+Person(customer, "Project user", "Creates ExportPolicy resources and the basic-auth Secret they reference")
+
+System_Ext(receiver, "Prometheus Remote Write receiver", "Third-party metrics platform")
+ContainerDb_Ext(metrics_store, "Tenant metrics store", "Prometheus-compatible store", "Serves matching series from a /federate endpoint")
+
+System_Boundary(telemetry, "Export") {
+    Container(api, "Project control plane", "Kubernetes API", "Stores ExportPolicy resources and sink credential Secrets")
+    Container(operator, "Telemetry operator", "Go, controller-runtime", "Renders one Vector config per ExportPolicy")
+    ContainerDb(config_secret, "Config Secrets", "Kubernetes Secret", "export-policy-vector-config-<uid>, labeled for the sidecar")
+
+    System_Boundary(exporter_pod, "Exporter pod (one shared Deployment)") {
+        Container(sidecar, "Config sidecar", "k8s-sidecar", "Copies labeled Secrets into the Vector config directory")
+        Container(vector, "Vector", "Vector", "Scrapes series and remote-writes them; reloads config on change")
+    }
+}
+
+Rel(customer, api, "Creates ExportPolicy", "kubectl / API")
+Rel(operator, api, "Watches ExportPolicy; reads basic-auth Secrets")
+Rel(operator, config_secret, "Writes", "Kubernetes API")
+Rel(sidecar, config_secret, "Watches", "Kubernetes API")
+Rel(sidecar, vector, "Writes config files", "Shared volume")
+Rel(vector, metrics_store, "Scrapes forced-project selector", "HTTP /federate")
+Rel(vector, receiver, "Pushes samples", "Prometheus Remote Write")
+
+SHOW_LEGEND()
+@enduml

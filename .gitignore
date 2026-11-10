@@ -36,3 +36,6 @@ go.work
 # Claude
 .claude/settings.local.json
 .claude/worktrees/
+
+# Task checksums
+.task/

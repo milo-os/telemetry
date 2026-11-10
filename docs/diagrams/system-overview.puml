@@ -1,0 +1,51 @@
+@startuml system-overview
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Telemetry system: end-to-end overview
+
+LAYOUT_LEFT_RIGHT()
+
+Person(tenant, "Tenant", "Queries logs with datumctl telemetry; logs and metrics through the API")
+System_Ext(controlplane, "Control plane", "Aggregates the o11y.miloapis.com API, authorizes queries, holds ExportPolicy resources")
+SystemDb_Ext(vm, "VictoriaMetrics", "Metrics store; source for metric queries and ExportPolicy")
+System_Ext(receiver, "Prometheus Remote Write receiver", "Customer-chosen metrics platform")
+
+System_Boundary(edge, "Edge cluster (one per location)") {
+    Container(workloads, "Workloads", "Platform services and customer workloads", "Push logs over OTLP or write to stdout and stderr")
+    Container(gateway, "Gateway collector", "OTel Collector, Deployment", "Receives OTLP; resolves the project; publishes to NATS")
+    Container(agent, "Node agent", "OTel Collector, DaemonSet", "Tails pod log files; resolves the project; publishes to NATS")
+    ContainerQueue(leaf, "NATS leaf", "Core NATS, no JetStream", "Routes to the hub; drops publishes while the hub link is down")
+}
+
+System_Boundary(hub, "Hub cluster") {
+    ContainerQueue(js, "NATS hub", "JetStream, stream o11y", "Durable buffer for o11y.>; retention set by the deployment")
+    Container(sink, "Sink collector", "OTel Collector, 1 replica", "Pulls o11y.logs.> and acks before the insert")
+    ContainerDb(ch, "ClickHouse", "o11y.logs", "Stores logs; schema created by clickhouse-migrate")
+    Container(ql, "Query layer", "Go, aggregated API server", "Authorizes each route; binds one project per request")
+}
+
+System_Boundary(export, "Export") {
+    Container(operator, "ExportPolicy operator", "Go", "Renders one Vector config Secret per policy")
+    Container(vector, "Vector", "Shared Deployment", "Scrapes matching series and remote-writes them")
+}
+
+Rel(workloads, gateway, "Pushes logs", "OTLP/gRPC 4317")
+Rel(agent, workloads, "Tails pod log files")
+Rel(gateway, leaf, "Publishes", "mTLS 4222; o11y.logs.<cluster>.<project>")
+Rel(agent, leaf, "Publishes", "mTLS 4222; o11y.logs.<cluster>.<project>")
+Rel(leaf, js, "Leaf connection", "TLS + NKey, 7422")
+Rel(sink, js, "Pulls from durable consumer", "mTLS")
+Rel(sink, ch, "Inserts logs", "Native protocol, mTLS")
+
+Rel(tenant, controlplane, "Queries", "HTTPS")
+Rel(controlplane, ql, "Proxies requests", "Aggregated API, front-proxy mTLS")
+Rel(ql, ch, "SELECT logs", "telemetry_project_id set per query")
+Rel(ql, vm, "Queries metrics", "HTTP, extra_label=project")
+
+Rel(operator, controlplane, "Watches ExportPolicy")
+Rel(operator, vector, "Writes per-policy config Secret")
+Rel(vector, vm, "Scrapes series", "HTTP /federate")
+Rel(vector, receiver, "Pushes samples", "Prometheus Remote Write")
+
+SHOW_LEGEND()
+@enduml
