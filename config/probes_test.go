@@ -3,6 +3,9 @@
 package config
 
 import (
+	"bytes"
+	"io"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -170,5 +173,102 @@ func TestVectorProbesReachItsAPI(t *testing.T) {
 
 	if strings.Contains(readFile(t, servicePath), "8686") {
 		t.Errorf("%s: exposes the 8686 API port", servicePath)
+	}
+}
+
+func kustomizeBuild(t *testing.T, dir string) []byte {
+	t.Helper()
+	cmds := [][]string{{"kustomize", "build"}, {"kubectl", "kustomize"}}
+	for _, c := range cmds {
+		bin, err := exec.LookPath(c[0])
+		if err != nil {
+			continue
+		}
+		out, err := exec.Command(bin, append(c[1:], dir)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s %s: %v\n%s", c[0], strings.Join(c[1:], " "), err, out)
+		}
+		return out
+	}
+	t.Fatalf("neither kustomize nor kubectl is on PATH; cannot render %s", dir)
+	return nil
+}
+
+// TestVectorNetworkPolicySelectsRenderedPods guards the NetworkPolicy that
+// keeps the 8686 gRPC tap closed. The policy's selector is rewritten by the
+// kustomization's label transformer, so only the rendered output shows whether
+// it still selects the Deployment's pods. A mismatch leaves the pods open.
+func TestVectorNetworkPolicySelectsRenderedPods(t *testing.T) {
+	rendered := kustomizeBuild(t, "operator/vector")
+
+	var podLabels, selector map[string]string
+	dec := yaml.NewDecoder(bytes.NewReader(rendered))
+	for {
+		var obj struct {
+			Kind string `yaml:"kind"`
+			Spec struct {
+				PodSelector struct {
+					MatchLabels map[string]string `yaml:"matchLabels"`
+				} `yaml:"podSelector"`
+				Template struct {
+					Metadata struct {
+						Labels map[string]string `yaml:"labels"`
+					} `yaml:"metadata"`
+				} `yaml:"template"`
+			} `yaml:"spec"`
+		}
+		err := dec.Decode(&obj)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("operator/vector: decoding rendered output: %v", err)
+		}
+		switch obj.Kind {
+		case "Deployment":
+			podLabels = obj.Spec.Template.Metadata.Labels
+		case "NetworkPolicy":
+			selector = obj.Spec.PodSelector.MatchLabels
+		}
+	}
+
+	if len(podLabels) == 0 {
+		t.Fatal("operator/vector: rendered Deployment has no pod template labels")
+	}
+	if len(selector) == 0 {
+		t.Fatal("operator/vector: rendered NetworkPolicy has an empty podSelector, which selects every pod in the namespace")
+	}
+	for k, v := range selector {
+		if podLabels[k] != v {
+			t.Errorf("operator/vector: NetworkPolicy selects %s=%q but the Deployment's pods carry %s=%q; the policy protects nothing",
+				k, v, k, podLabels[k])
+		}
+	}
+}
+
+// TestSinkCollectorLivenessProbe guards the sink's liveness settings. Six
+// failures at a 10s period restart a wedged collector after about a minute
+// without restarting it for a brief stall.
+func TestSinkCollectorLivenessProbe(t *testing.T) {
+	const path = "collectors/sink-collector.yaml"
+
+	var doc struct {
+		Spec struct {
+			LivenessProbe struct {
+				PeriodSeconds    int `yaml:"periodSeconds"`
+				FailureThreshold int `yaml:"failureThreshold"`
+			} `yaml:"livenessProbe"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(readFile(t, path)), &doc); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+
+	lp := doc.Spec.LivenessProbe
+	if lp.PeriodSeconds != 10 {
+		t.Errorf("%s: livenessProbe periodSeconds %d, want 10", path, lp.PeriodSeconds)
+	}
+	if lp.FailureThreshold != 6 {
+		t.Errorf("%s: livenessProbe failureThreshold %d, want 6", path, lp.FailureThreshold)
 	}
 }
