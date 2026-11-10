@@ -1,5 +1,9 @@
+# The API serves GET /health for the pod's probes. Vector 0.61 also serves its
+# gRPC observability API (including event tap) on this port, so the
+# NetworkPolicy beside this config admits only the metrics port.
 api:
-  enabled: false
+  enabled: true
+  address: 0.0.0.0:8686
 sources:
   internal_logs:
     type: internal_logs
