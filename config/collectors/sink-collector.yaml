@@ -21,6 +21,17 @@ spec:
   observability:
     metrics:
       enableMetrics: true
+  # The operator derives readiness, liveness and startup probes from the
+  # health_check extension below. It reports ready once every pipeline has
+  # started and does not track NATS or ClickHouse afterwards. The clickhouse
+  # exporter holds startup for about 30s while ClickHouse is unreachable, so
+  # the startup window allows two minutes rather than the default 30s.
+  startupProbe:
+    periodSeconds: 5
+    failureThreshold: 24
+  livenessProbe:
+    periodSeconds: 10
+    failureThreshold: 6
   resources:
     requests:
       cpu: 150m
@@ -63,6 +74,10 @@ spec:
       mountPath: /etc/otel/clickhouse-client
       readOnly: true
   config:
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+
     receivers:
       # Binds the pre-existing `o11y-sink-collector` durable consumer on the
       # `o11y` stream (receiver never creates it; see natsreceiver/config.go).
@@ -145,6 +160,7 @@ spec:
           max_elapsed_time: 300s
 
     service:
+      extensions: [health_check]
       pipelines:
         logs:
           receivers: [nats]

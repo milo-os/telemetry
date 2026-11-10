@@ -35,6 +35,22 @@ spec:
             - containerPort: 9598
               name: metrics
               protocol: TCP
+            - containerPort: 8686
+              name: api
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: api
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: api
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
           resources:
             requests:
               cpu: 100m

@@ -4,6 +4,7 @@ resources:
   - deployment.yaml
   - service.yaml
   - monitoring.yaml
+  - network-policy.yaml
 
 labels:
   - pairs:
