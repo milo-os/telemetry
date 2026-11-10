@@ -1,0 +1,27 @@
+@startuml edge-hub-trust
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Edge-to-hub NATS trust
+
+System_Boundary(edge, "Edge cluster (one per location)") {
+    Container(leaf, "Edge NATS", "Core NATS", "Authenticates with a per-location NKey seed read from an environment variable")
+}
+
+System_Boundary(hub, "Hub cluster (also Karmada host)") {
+    ContainerQueue(natshub, "Hub NATS", "JetStream", "Leafnode listener on 7422 presents a Let's Encrypt certificate; grants each NKey publish rights under its own cluster token")
+    Container(gen, "nkey-generator", "CronJob, every 10 minutes", "Lists labeled clusters, keeps per-location seeds, writes the account's users as Helm values")
+}
+
+System_Ext(karmada, "karmada-apiserver", "Federation membership; the opt-in label marks a location")
+System_Ext(store, "External secret store", "Distributes seeds to edge clusters")
+System_Ext(le, "Let's Encrypt", "DNS-01 issuance for the leafnode hostname")
+
+Rel(leaf, natshub, "Leaf connection", "hub certificate (system roots) + NKey, 7422")
+Rel(gen, karmada, "Lists labeled clusters", "projected ServiceAccount token")
+Rel(gen, store, "PushSecret nats-leaf-nkey-<cluster>", "External Secrets")
+Rel(gen, natshub, "Writes nats-o11y-authorized-leafs ConfigMap", "Helm values; chart reloader applies")
+Rel(le, natshub, "Issues leafnode certificate", "DNS-01 via cert-manager")
+Rel(leaf, store, "ExternalSecret pulls its seed", "nats-leaf-nkey-<cluster>")
+
+SHOW_LEGEND()
+@enduml

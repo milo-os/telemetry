@@ -1,0 +1,25 @@
+@startuml logs
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Log storage: containers
+
+System_Ext(edge, "Edge collectors", "Gateway collector and node agent. Resolve milo.project.id and publish to o11y.logs.<cluster>.<project_id>")
+
+System_Boundary(hub, "Hub") {
+    Container(nats, "Hub NATS JetStream", "NATS", "Stream o11y with the durable consumer o11y-sink-collector")
+    Container(sink, "Sink collector", "OpenTelemetry Collector", "natsreceiver, transform/observed_time, batch, clickhouseexporter. Logs only")
+    Container(migrate, "clickhouse-migrate", "Go, Kubernetes Job", "Creates the Replicated database and applies SQL migrations")
+    ContainerDb(clickhouse, "ClickHouse", "o11y.logs, ReplicatedMergeTree", "Row policy queryapi_project_isolation on telemetry_project_id")
+    ContainerDb(keeper, "ClickHouse Keeper", "Keeper", "Coordinates the Replicated database and tables")
+    Container(queryapi, "queryapi", "Go, aggregated API server", "Reads logs with ProjectId predicate and telemetry_project_id setting")
+}
+
+Rel(edge, nats, "Publishes records", "NATS leaf connection")
+Rel(sink, nats, "Pulls and acks messages", "mTLS")
+Rel(sink, clickhouse, "INSERT into logs", "Native TLS, client cert")
+Rel(migrate, clickhouse, "CREATE DATABASE ON CLUSTER, then migrations", "Native TLS, client cert")
+Rel(queryapi, clickhouse, "SELECT with telemetry_project_id", "Native TLS, client cert")
+Rel(clickhouse, keeper, "Replicates DDL and parts", "Keeper protocol")
+
+SHOW_LEGEND()
+@enduml

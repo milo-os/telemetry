@@ -1,0 +1,31 @@
+@startuml ingest-topology
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Ingest pipeline
+
+System_Boundary(edge, "Edge cluster (one per location)") {
+    Container(workloads, "Workloads", "Pods", "Push OTLP or write to stdout and stderr")
+    Container(gw, "Gateway collector", "OTel Collector, Deployment x2", "Attributes each record to a project and builds the NATS subject")
+    Container(agent, "Node agent", "OTel Collector, DaemonSet", "Tails pod log files and attributes records")
+    Container(nodecol, "Compute node collector", "OTel Collector, DaemonSet (opt-in)", "Reads CRI logs on compute nodes")
+    ContainerQueue(leaf, "Edge NATS", "Core NATS, single replica, no JetStream", "Drops publishes while the hub link is down")
+}
+
+System_Boundary(hub, "Hub cluster") {
+    ContainerQueue(js, "Hub NATS", "JetStream, stream o11y", "Captures o11y.> from leaf connections")
+    Container(sink, "Sink collector", "OTel Collector, 1 replica", "Pulls o11y.logs.> and acks before the insert")
+    ContainerDb(ch, "ClickHouse", "o11y.logs", "Stores logs")
+}
+
+Rel(workloads, gw, "Pushes logs", "OTLP/gRPC 4317, plaintext")
+Rel(agent, workloads, "Tails log files", "/var/log/pods")
+Rel(nodecol, workloads, "Reads CRI log files", "/var/log/pods")
+Rel(nodecol, gw, "Forwards logs", "OTLP/gRPC 4317, plaintext")
+Rel(gw, leaf, "Publishes", "mTLS 4222, o11y.logs.<cluster>.<project_id>")
+Rel(agent, leaf, "Publishes", "mTLS 4222, o11y.logs.<cluster>.<project_id>")
+Rel(leaf, js, "Leaf connection", "TLS first + NKey, 7422")
+Rel(sink, js, "Pulls from durable consumer", "mTLS 4222")
+Rel(sink, ch, "clickhouse exporter INSERT", "mTLS native protocol")
+
+SHOW_LEGEND()
+@enduml

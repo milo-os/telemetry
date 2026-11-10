@@ -1,0 +1,18 @@
+@startuml retention
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+title Log retention: containers
+
+System_Boundary(ch, "ClickHouse") {
+    Container(migrate, "clickhouse-migrate", "Go, Kubernetes Job", "Applies migration 000003: storage policy and TTL on logs")
+    ContainerDb(logs, "o11y.logs", "ReplicatedMergeTree", "TTL moves internal rows to the cold volume after 1 day. TTL deletes internal rows after 30 days and other rows after 7")
+    ContainerDb(hot, "Hot volume", "Volume default of policy hot_cold", "Disk chosen by the deployment")
+    ContainerDb(cold, "Cold volume", "Volume cold of policy hot_cold", "Disk chosen by the deployment")
+}
+
+Rel(migrate, logs, "MODIFY SETTING storage_policy, MODIFY TTL", "Native TLS")
+Rel(logs, hot, "Writes new parts")
+Rel(logs, cold, "TTL TO VOLUME moves parts")
+
+SHOW_LEGEND()
+@enduml
