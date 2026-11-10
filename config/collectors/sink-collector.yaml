@@ -109,7 +109,7 @@ spec:
       # per edge-published record. Sized so the ~10 concurrent in-flight
       # batches (exporterhelper's default queue concurrency) sum past
       # ClickHouse's async_insert_max_data_size (10MB), so it flushes on size
-      # instead of waiting out the busy_timeout on every insert (infra#5519).
+      # instead of waiting out the busy_timeout on every insert.
       batch:
         timeout: 10s
         send_batch_size: 8192
