@@ -41,6 +41,7 @@ tasks:
       - task: queryapi:lint
       - task: nkey-generator:lint
       - task: cli:lint
+      - task: docs:lint
 
   tidy:
     desc: Run go mod tidy in every module (mirrors CI)
@@ -62,6 +63,9 @@ tasks:
       - task: operator:test-e2e
 
 includes:
+  docs:
+    taskfile: ./docs
+    dir: ./docs
   operator:
     taskfile: ./operator
     dir: ./operator
