@@ -7,8 +7,8 @@ toolchain go1.27.4
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.42.0
 	github.com/getkin/kin-openapi v0.149.0
-	github.com/prometheus/client_golang v1.24.0
-	github.com/prometheus/common v0.70.0
+	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/common v0.70.1
 	github.com/spf13/pflag v1.0.10
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	k8s.io/api v0.37.2
