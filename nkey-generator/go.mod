@@ -2,6 +2,8 @@ module go.datum.net/o11y/nkey-generator
 
 go 1.26.0
 
+toolchain go1.27.4
+
 require (
 	github.com/nats-io/nkeys v0.4.10
 	k8s.io/api v0.37.1
